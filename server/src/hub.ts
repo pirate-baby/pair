@@ -22,6 +22,7 @@ export type Outcome =
   | { status: "completed" }
   | { status: "interrupted"; index: number; question: string; context: VisibleContext }
   | { status: "question"; question: string; context: VisibleContext; choice?: number }
+  | { status: "return"; context: VisibleContext }
   | { status: "ended" }
   | { status: "idle" }
   | { status: "cancelled" };
@@ -47,7 +48,8 @@ export class Hub {
   private main: { script: ResolvedScript; index: number } | null = null;
   private awaitPrompt: { prompt: string | null; options?: string[] } | null = null;
   private waiter: Waiter | null = null;
-  private queued: { question: string; context: VisibleContext; choice?: number } | null = null;
+  /** An answer that arrived while no tool call was waiting; handed to the next await_user. */
+  private queued: Outcome | null = null;
   private connectWaiters: (() => void)[] = [];
   private kokoro = new Kokoro();
 
@@ -102,6 +104,7 @@ export class Hub {
     this.status = null;
     this.queued = null;
     this.broadcast({ type: "play", script, startAt, autoplay: true });
+    this.broadcastMain();
     return this.wait({ scriptId: script.id, resolve: () => {}, onSegment }, signal);
   }
 
@@ -114,12 +117,21 @@ export class Hub {
     return this.main && this.current !== this.main ? this.main : null;
   }
 
+  private mainMessage(): ServerMessage {
+    const m = this.pausedMain();
+    return { type: "main", paused: m ? { title: m.script.title, index: m.index, total: m.script.segments.length } : null };
+  }
+
+  private broadcastMain() {
+    this.broadcast(this.mainMessage());
+  }
+
   /** Waits for a free-form question typed into the UI. */
   awaitQuestion(prompt: string | null, options: string[] | undefined, timeoutMs: number, signal?: AbortSignal): Promise<Outcome> {
     if (this.queued) {
       const q = this.queued;
       this.queued = null;
-      return Promise.resolve({ status: "question", ...q });
+      return Promise.resolve(q);
     }
     this.awaitPrompt = { prompt, options };
     this.broadcast({ type: "await", prompt, options });
@@ -168,13 +180,26 @@ export class Hub {
           this.setStatus("Thinking…");
         } else {
           // Nobody is listening right now; hand it to the next await_user call.
-          this.queued = { question: msg.question, context: msg.context, choice: msg.choice };
+          this.queued = { status: "question", question: msg.question, context: msg.context, choice: msg.choice };
           this.setStatus("Question queued — the agent will pick it up when it checks back in.");
         }
         break;
+      case "return": {
+        if (!this.pausedMain()) break;
+        const o: Outcome = { status: "return", context: msg.context };
+        if (w) {
+          this.settle(o);
+          this.setStatus("Heading back…");
+        } else {
+          this.queued = o;
+          this.setStatus("Got it — the agent will head back when it checks in.");
+        }
+        break;
+      }
       case "end":
         this.current = this.main = null;
         this.awaitPrompt = null;
+        this.broadcastMain();
         this.settle({ status: "ended" });
         this.setStatus("Session ended.");
         break;
@@ -187,6 +212,7 @@ export class Hub {
     send({ type: "hello", root: this.ws.root, rootName: this.ws.name });
     send({ type: "status", text: this.status });
     send({ type: "kokoro", status: this.kokoro.status });
+    send(this.mainMessage());
     if (this.current) send({ type: "play", script: this.current.script, startAt: this.current.index, autoplay: false });
     if (this.waiter && !this.waiter.scriptId) send({ type: "await", prompt: this.awaitPrompt?.prompt ?? null, options: this.awaitPrompt?.options });
     sock.on("message", (data) => {

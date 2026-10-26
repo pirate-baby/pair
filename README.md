@@ -60,6 +60,13 @@ Then, in any repo, ask "walk me through how X works". The UI opens at http://loc
 - `--port <n>` / `PAIR_PORT`: the UI port (default 7420). If it's taken, the next free port is used.
 - `PAIR_NO_OPEN=1`: don't auto-open a browser tab.
 
+## Controls
+
+- **Space** plays or pauses. **«** / **»** (or **←** / **→**) skip between parts. Back restarts the current part once it's a few words in; otherwise it goes to the previous part.
+- **Type a question** at any point to interject. Typing pauses playback.
+- **↩ Back to: …** is pinned above the transcript whenever you've stepped away from the main walkthrough. Clicking it asks the agent to pick up where you left off.
+- **Click any earlier paragraph** in the transcript to replay from there.
+
 ## Voice
 
 Pick the speech engine in the controls under the transcript.

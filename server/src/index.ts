@@ -93,6 +93,12 @@ function describeOutcome(o: Outcome, played?: ResolvedScript): string {
         "Otherwise investigate, answer with present_walkthrough (aside_for set to the question), and when it finishes ask where to go next with await_user.",
       ].filter(Boolean).join("\n");
     }
+    case "return": {
+      const main = hub.pausedMain();
+      return main
+        ? `The user clicked "Back to: ${main.script.title}". Call resume_walkthrough now (it picks up at part ${main.index + 1}), with a one- or two-sentence intro that bridges back to where you were.`
+        : "The user asked to go back, but there's no paused walkthrough. Ask what they'd like next with await_user.";
+    }
     case "ended":
       return "The user ended the walkthrough session. Stop presenting.";
     case "idle":

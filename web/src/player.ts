@@ -3,6 +3,8 @@ import { Speaker, wordStarts } from "./speech";
 import type { Stage } from "./stage";
 
 const SEGMENT_GAP_MS = 450;
+/** How far into a segment (in characters spoken) "back" restarts it instead of going to the previous one. */
+const RESTART_THRESHOLD_CHARS = 30;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export interface PlayerState {
@@ -95,7 +97,30 @@ export class Player {
     this.stop();
     this.resumeAt = 0;
     this.set({ index, offset: 0, finished: false, playing });
+    this.stage.clear();
+    // Report right away, even while paused, so a later resume starts here.
+    this.onSegment(script.id, index);
     this.start(this.run, index);
+  }
+
+  /**
+   * Previous/next segment, like a music player: back restarts the current
+   * segment once it's a few words in, otherwise goes to the previous one.
+   * Skipping past the last segment finishes the walkthrough.
+   */
+  skip(delta: 1 | -1) {
+    const { script, index, offset, finished } = this.state;
+    if (!script) return;
+    const last = script.segments.length - 1;
+    if (delta < 0) {
+      const restart = !finished && offset > RESTART_THRESHOLD_CHARS;
+      return this.seek(finished ? last : restart ? index : Math.max(0, index - 1));
+    }
+    if (finished) return;
+    if (index < last) return this.seek(index + 1);
+    this.stop();
+    this.set({ finished: true, playing: false, offset: Infinity });
+    this.onDone(script.id);
   }
 
   stop() {

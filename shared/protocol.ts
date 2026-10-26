@@ -82,12 +82,16 @@ export type ServerMessage =
   | { type: "status"; text: string | null }
   | { type: "play"; script: ResolvedScript; startAt: number; autoplay: boolean }
   | { type: "await"; prompt: string | null; options?: string[] }
+  /** The main walkthrough while the user has stepped away from it (null when it's current or done). */
+  | { type: "main"; paused: { title: string; index: number; total: number } | null }
   | { type: "stop" };
 
 export type ClientMessage =
   | { type: "segment"; id: string; index: number }
   | { type: "done"; id: string }
   | { type: "interrupt"; id: string | null; index: number; question: string; context: VisibleContext; choice?: number }
+  /** "Back to <main walkthrough>" was clicked. */
+  | { type: "return"; context: VisibleContext }
   | { type: "end" };
 
 export interface TreeEntry {

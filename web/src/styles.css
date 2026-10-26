@@ -124,6 +124,29 @@ button:hover:not(:disabled) { background: #1177bb; }
 button:disabled { opacity: 0.4; cursor: default; }
 button.secondary { background: #3a3d41; }
 button.play { min-width: 86px; }
+.transport { display: flex; gap: 2px; }
+.transport button { border-radius: 0; }
+.transport button:first-child { border-radius: 4px 0 0 4px; }
+.transport button:last-child { border-radius: 0 4px 4px 0; }
+button.skip { padding: 5px 10px; font-size: 15px; line-height: 1; }
+
+.return-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 14px;
+  background: #0e2a40;
+  border-radius: 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  text-align: left;
+  flex: none;
+}
+.return-link:hover:not(:disabled) { background: #12395a; }
+.return-arrow { color: var(--accent); font-size: 15px; }
+.return-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.return-part { flex: none; margin-left: auto; color: var(--muted); font-size: 12px; }
 
 .engine-status { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0 12px 10px; color: var(--muted); font-size: 12px; }
 .engine-status.error { color: #f48771; }

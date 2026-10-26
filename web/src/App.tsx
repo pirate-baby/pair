@@ -39,6 +39,7 @@ export function App() {
   const [status, setStatus] = useState<string | null>(null);
   // Set while the agent is waiting on the user (await_user); options render as buttons.
   const shownPrompt = useRef<string | null>(null);
+  const [pausedMain, setPausedMain] = useState<{ title: string; index: number; total: number } | null>(null);
   const [awaiting, setAwaiting] = useState<{ prompt: string | null; options: string[] } | undefined>(undefined);
   const [ps, setPs] = useState<PlayerState>(player.state);
   const [tabs, setTabs] = useState<TabsState>(stage.tabs);
@@ -115,6 +116,9 @@ export function App() {
         case "status":
           setStatus(m.text);
           break;
+        case "main":
+          setPausedMain(m.paused);
+          break;
         case "kokoro":
           player.speaker.kokoroStatus = m.status;
           setKokoro(m.status);
@@ -152,9 +156,17 @@ export function App() {
     connect();
 
     const onKey = (e: KeyboardEvent) => {
-      if (e.code === "Space" && !(e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement)) {
+      if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.code === "Space") {
         e.preventDefault();
         player.toggle();
+      } else if (e.code === "ArrowLeft") {
+        e.preventDefault();
+        player.skip(-1);
+      } else if (e.code === "ArrowRight") {
+        e.preventDefault();
+        player.skip(1);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -177,6 +189,18 @@ export function App() {
     send({ type: "interrupt", id: ps.script?.id ?? null, index: ps.index, question: q, context: stage.context(), choice });
     setLog((l) => [...l, { kind: "question", text: q }]);
     setQuestion("");
+    // Hand the keyboard back to the player shortcuts (Space, ←, →).
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    setAwaiting(undefined);
+  };
+
+  const goBack = () => {
+    if (!pausedMain) return;
+    player.pause();
+    player.speaker.stop();
+    shownPrompt.current = null;
+    send({ type: "return", context: stage.context() });
+    setLog((l) => [...l, { kind: "question", text: `↩ Back to: ${pausedMain.title}` }]);
     setAwaiting(undefined);
   };
 
@@ -209,6 +233,18 @@ export function App() {
           Walkthrough
         </div>
 
+        {pausedMain && (
+          <button className="return-link" onClick={goBack} title="Ask the agent to pick the walkthrough back up">
+            <span className="return-arrow">↩</span>
+            <span className="return-text">
+              Back to: <strong>{pausedMain.title}</strong>
+            </span>
+            <span className="return-part">
+              part {pausedMain.index + 1} of {pausedMain.total}
+            </span>
+          </button>
+        )}
+
         <div className="transcript">
           {log.length === 0 && !status && (
             <div className="empty">Ask your agent a question about this codebase. The walkthrough will play here.</div>
@@ -231,9 +267,17 @@ export function App() {
         </div>
 
         <div className="controls">
-          <button className="play" onClick={() => player.toggle()} disabled={!ps.script} title="Play / pause (Space)">
-            {ps.playing ? "❚❚ Pause" : ps.finished ? "↺ Replay" : "▶ Play"}
-          </button>
+          <div className="transport">
+            <button className="skip" onClick={() => player.skip(-1)} disabled={!ps.script} title="Back (←): restart this part, or go to the previous one" aria-label="Back">
+              «
+            </button>
+            <button className="play" onClick={() => player.toggle()} disabled={!ps.script} title="Play / pause (Space)">
+              {ps.playing ? "❚❚ Pause" : ps.finished ? "↺ Replay" : "▶ Play"}
+            </button>
+            <button className="skip" onClick={() => player.skip(1)} disabled={!ps.script || ps.finished} title="Next part (→)" aria-label="Next">
+              »
+            </button>
+          </div>
           <label className="toggle">
             <input type="checkbox" checked={voiceOn} onChange={(e) => setVoiceOn(e.target.checked)} /> Voice
           </label>
@@ -329,6 +373,8 @@ function ScriptView({ entry, live, onSeek }: { entry: Extract<LogEntry, { kind: 
   const { script } = entry;
   const current = live && live.script?.id === script.id ? live : null;
   const upTo = current ? (current.finished ? script.segments.length - 1 : current.index) : entry.reached;
+  // Skipping back past where this entry resumed should still show the part being played.
+  const from = current && !current.finished ? Math.min(entry.from, current.index) : entry.from;
   return (
     <div className={`script ${script.transition ? "transition" : ""}`}>
       {script.aside ? (
@@ -336,9 +382,9 @@ function ScriptView({ entry, live, onSeek }: { entry: Extract<LogEntry, { kind: 
       ) : (
         !script.transition && <div className="script-title">{script.title}</div>
       )}
-      {entry.from > 0 && !script.aside && <div className="resumed">Resumed from part {entry.from + 1}</div>}
-      {script.segments.slice(entry.from, upTo + 1).map((seg, j) => {
-        const i = entry.from + j;
+      {from > 0 && !script.aside && <div className="resumed">Resumed from part {from + 1}</div>}
+      {script.segments.slice(from, upTo + 1).map((seg, j) => {
+        const i = from + j;
         const isLive = current && !current.finished && i === current.index;
         const cut = isLive ? spokenEnd(seg.text, current.offset) : seg.text.length;
         return (
