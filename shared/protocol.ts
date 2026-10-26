@@ -48,6 +48,8 @@ export interface ResolvedScript {
   title: string;
   /** Set when this walkthrough answers an interjection. */
   aside?: { question: string };
+  /** A short spoken bridge back into the main walkthrough. */
+  transition?: boolean;
   segments: ResolvedSegment[];
 }
 
@@ -79,13 +81,13 @@ export type ServerMessage =
   | { type: "kokoro"; status: KokoroStatus }
   | { type: "status"; text: string | null }
   | { type: "play"; script: ResolvedScript; startAt: number; autoplay: boolean }
-  | { type: "await"; prompt: string | null }
+  | { type: "await"; prompt: string | null; options?: string[] }
   | { type: "stop" };
 
 export type ClientMessage =
   | { type: "segment"; id: string; index: number }
   | { type: "done"; id: string }
-  | { type: "interrupt"; id: string | null; index: number; question: string; context: VisibleContext }
+  | { type: "interrupt"; id: string | null; index: number; question: string; context: VisibleContext; choice?: number }
   | { type: "end" };
 
 export interface TreeEntry {

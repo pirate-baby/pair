@@ -7,6 +7,7 @@ import { FileTree, tree } from "./tree";
 
 type LogEntry =
   | { kind: "question"; text: string }
+  | { kind: "agent"; text: string }
   | { kind: "script"; key: number; script: ResolvedScript; from: number; reached: number };
 
 const PREFS_KEY = "pair.prefs";
@@ -36,7 +37,9 @@ export function App() {
   const [connected, setConnected] = useState(false);
   const [rootName, setRootName] = useState("");
   const [status, setStatus] = useState<string | null>(null);
-  const [awaitPrompt, setAwaitPrompt] = useState<string | null | undefined>(undefined);
+  // Set while the agent is waiting on the user (await_user); options render as buttons.
+  const shownPrompt = useRef<string | null>(null);
+  const [awaiting, setAwaiting] = useState<{ prompt: string | null; options: string[] } | undefined>(undefined);
   const [ps, setPs] = useState<PlayerState>(player.state);
   const [tabs, setTabs] = useState<TabsState>(stage.tabs);
   const [log, setLog] = useState<LogEntry[]>([]);
@@ -119,7 +122,7 @@ export function App() {
         case "play": {
           // A reconnect re-sends the current walkthrough; keep what's already loaded.
           if (!m.autoplay && player.state.script?.id === m.script.id) break;
-          setAwaitPrompt(undefined);
+          setAwaiting(undefined);
           setStatus(null);
           setLog((l) => [...l, { kind: "script", key: logKey++, script: m.script, from: m.startAt, reached: m.startAt }]);
           const canSpeak = !player.speaker.enabled || navigator.userActivation?.hasBeenActive !== false;
@@ -127,10 +130,19 @@ export function App() {
           setNeedsGesture(m.autoplay && !canSpeak);
           break;
         }
-        case "await":
-          setAwaitPrompt(m.prompt);
+        case "await": {
+          setAwaiting({ prompt: m.prompt, options: m.options ?? [] });
           setStatus(null);
+          const prompt = m.prompt;
+          // The agent's question is a turn in the conversation: show it and say it.
+          // A reconnect re-sends the pending prompt, so only act on a new one.
+          if (prompt && prompt !== shownPrompt.current) {
+            shownPrompt.current = prompt;
+            setLog((l) => [...l, { kind: "agent", text: prompt }]);
+            if (!player.state.playing) player.speaker.speak(prompt, 0, () => {}).catch(() => {});
+          }
           break;
+        }
         case "stop":
           player.stop();
           player.pause();
@@ -156,14 +168,16 @@ export function App() {
     };
   }, [player, stage]);
 
-  const ask = () => {
-    const q = question.trim();
+  const ask = (text?: string, choice?: number) => {
+    const q = (text ?? question).trim();
     if (!q) return;
     player.pause();
-    send({ type: "interrupt", id: ps.script?.id ?? null, index: ps.index, question: q, context: stage.context() });
+    player.speaker.stop();
+    shownPrompt.current = null;
+    send({ type: "interrupt", id: ps.script?.id ?? null, index: ps.index, question: q, context: stage.context(), choice });
     setLog((l) => [...l, { kind: "question", text: q }]);
     setQuestion("");
-    setAwaitPrompt(undefined);
+    setAwaiting(undefined);
   };
 
   const transcriptEnd = useRef<HTMLDivElement>(null);
@@ -202,6 +216,8 @@ export function App() {
           {log.map((e) =>
             e.kind === "question" ? (
               <div key={`q${log.indexOf(e)}`} className="bubble">{e.text}</div>
+            ) : e.kind === "agent" ? (
+              <div key={`a${log.indexOf(e)}`} className="bubble agent">{e.text}</div>
             ) : (
               <ScriptView key={e.key} entry={e} live={e.key === lastScriptKey ? ps : null} onSeek={(i) => player.seek(i)} />
             ),
@@ -266,11 +282,18 @@ export function App() {
           </div>
         )}
 
-        <div className={`ask ${awaitPrompt !== undefined ? "waiting" : ""}`}>
-          {awaitPrompt !== undefined && <div className="ask-prompt">{awaitPrompt ?? "Any follow-up questions?"}</div>}
+        <div className={`ask ${awaiting ? "waiting" : ""}`}>
+          {awaiting && !awaiting.prompt && <div className="ask-prompt">Any follow-up questions?</div>}
+          {awaiting && awaiting.options.length > 0 && (
+            <div className="options">
+              {awaiting.options.map((o, i) => (
+                <button key={o} className="option" onClick={() => ask(o, i)}>{o}</button>
+              ))}
+            </div>
+          )}
           <textarea
             value={question}
-            placeholder={ps.playing ? "Interject — typing pauses the walkthrough…" : "Ask a question…"}
+            placeholder={ps.playing ? "Interject — typing pauses the walkthrough…" : awaiting?.options.length ? "…or ask something else" : "Ask a question…"}
             onChange={(e) => {
               setQuestion(e.target.value);
               if (e.target.value) player.pause();
@@ -284,9 +307,9 @@ export function App() {
             rows={2}
           />
           <div className="ask-actions">
-            <button onClick={ask} disabled={!question.trim()}>Ask</button>
-            {awaitPrompt !== undefined && (
-              <button className="secondary" onClick={() => (send({ type: "end" }), setAwaitPrompt(undefined))}>End session</button>
+            <button onClick={() => ask()} disabled={!question.trim()}>Ask</button>
+            {awaiting && (
+              <button className="secondary" onClick={() => (send({ type: "end" }), setAwaiting(undefined))}>End session</button>
             )}
           </div>
         </div>
@@ -307,8 +330,12 @@ function ScriptView({ entry, live, onSeek }: { entry: Extract<LogEntry, { kind: 
   const current = live && live.script?.id === script.id ? live : null;
   const upTo = current ? (current.finished ? script.segments.length - 1 : current.index) : entry.reached;
   return (
-    <div className="script">
-      {script.aside ? <div className="script-title aside">Answering: {script.aside.question}</div> : <div className="script-title">{script.title}</div>}
+    <div className={`script ${script.transition ? "transition" : ""}`}>
+      {script.aside ? (
+        <div className="script-title aside">Answering: {script.aside.question}</div>
+      ) : (
+        !script.transition && <div className="script-title">{script.title}</div>
+      )}
       {entry.from > 0 && !script.aside && <div className="resumed">Resumed from part {entry.from + 1}</div>}
       {script.segments.slice(entry.from, upTo + 1).map((seg, j) => {
         const i = entry.from + j;

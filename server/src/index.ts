@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import type { Script } from "../../shared/protocol.js";
+import type { ResolvedScript, Script } from "../../shared/protocol.js";
 import { Workspace } from "./files.js";
 import { Hub, type Outcome } from "./hub.js";
 import { resolveScript } from "./script.js";
@@ -48,25 +48,51 @@ const segments = z
   )
   .min(1);
 
-function describeOutcome(o: Outcome, mainSegments?: { text: string }[]): string {
+/** Where the paused main walkthrough stands, so the agent can offer it by name. */
+function mainSummary() {
+  const main = hub.pausedMain();
+  if (!main) return null;
+  const seg = main.script.segments[main.index];
+  return `the main walkthrough "${main.script.title}" (paused at part ${main.index + 1} of ${main.script.segments.length}: ${JSON.stringify(seg?.text.slice(0, 120) ?? "")})`;
+}
+
+const ASK_NEXT =
+  "Don't resume or change direction on your own. Ask where to go next with await_user: a short spoken prompt plus 2-3 options, " +
+  "e.g. go deeper on what you just showed, or return to the main walkthrough (name it and where you were).";
+
+function describeOutcome(o: Outcome, played?: ResolvedScript): string {
   switch (o.status) {
-    case "completed":
-      return "Walkthrough finished playing. If the user is watching the UI, call await_user to take follow-up questions there.";
+    case "completed": {
+      if (played?.aside) {
+        const main = mainSummary();
+        return [
+          "The aside finished playing.",
+          main ? `The user stepped away from ${main}.` : "",
+          ASK_NEXT,
+          main ? "If they choose to go back, call resume_walkthrough with an intro that bridges back (one or two spoken sentences)." : "",
+        ].filter(Boolean).join("\n");
+      }
+      return "Walkthrough finished playing. If the user is watching the UI, call await_user with a spoken prompt and a few follow-up options (or end your turn).";
+    }
     case "interrupted":
       return [
         `The user paused at segment ${o.index} and asked: ${JSON.stringify(o.question)}`,
-        mainSegments?.[o.index] ? `They were hearing: ${JSON.stringify(mainSegments[o.index].text)}` : "",
+        played?.segments[o.index] ? `They were hearing: ${JSON.stringify(played.segments[o.index].text)}` : "",
         `What they could see: ${JSON.stringify(o.context)}`,
         "",
-        "Investigate if needed, answer with present_walkthrough (set aside_for to their question; keep it short and show the code you mention), then call resume_walkthrough to continue where they left off.",
+        "Investigate if needed, then answer with present_walkthrough (aside_for set to their question; keep it short and show the code you mention).",
+        "When the aside finishes, don't resume automatically: ask whether to dig further or return, with await_user.",
       ].filter(Boolean).join("\n");
-    case "question":
+    case "question": {
+      const main = mainSummary();
       return [
-        `The user asked: ${JSON.stringify(o.question)}`,
+        o.choice !== undefined ? `The user picked option ${o.choice + 1}: ${JSON.stringify(o.question)}` : `The user asked: ${JSON.stringify(o.question)}`,
         `What they could see: ${JSON.stringify(o.context)}`,
+        main ? `Still paused: ${main}. If they chose to go back, call resume_walkthrough (with an intro).` : "",
         "",
-        "Investigate, answer with present_walkthrough (aside_for set to the question), then call await_user again.",
-      ].join("\n");
+        "Otherwise investigate, answer with present_walkthrough (aside_for set to the question), and when it finishes ask where to go next with await_user.",
+      ].filter(Boolean).join("\n");
+    }
     case "ended":
       return "The user ended the walkthrough session. Stop presenting.";
     case "idle":
@@ -139,38 +165,64 @@ server.registerTool(
       }
     });
     const warn = result.warnings.length ? `\n\nWarnings:\n- ${result.warnings.join("\n- ")}` : "";
-    return text(describeOutcome(outcome, result.script.segments) + warn);
+    return text(describeOutcome(outcome, result.script) + warn);
   },
 );
 
 server.registerTool(
   "resume_walkthrough",
   {
-    description: "Resume the main walkthrough after answering an interjection. Blocks like present_walkthrough.",
-    inputSchema: { from_segment: z.number().int().optional().describe("Defaults to the segment the user paused on.") },
+    description:
+      "Return to the main walkthrough after an aside, once the user has said they want to. Blocks like present_walkthrough.",
+    inputSchema: {
+      from_segment: z.number().int().optional().describe("Defaults to the segment the user paused on."),
+      intro: z
+        .string()
+        .optional()
+        .describe("One or two spoken sentences that bridge back, e.g. \"Okay, back to the sync loop. We'd just seen how the change log gets pulled.\""),
+    },
   },
-  async ({ from_segment }, extra) => {
+  async ({ from_segment, intro }, extra) => {
     const main = hub.mainScript();
     if (!main) return text("There is no walkthrough to resume.", true);
     const from = Math.max(0, Math.min(from_segment ?? main.index, main.script.segments.length - 1));
+    let bridge: ResolvedScript | undefined;
+    if (intro?.trim()) {
+      const r = await resolveScript(ws, { title: "", segments: [{ narration: intro }] });
+      if (!r.script) return text(`Intro not played. Fix these and call again:\n- ${r.errors.join("\n- ")}`, true);
+      bridge = { ...r.script, transition: true };
+    }
     if (!(await hub.ensureOpen())) return text(`No browser connected. Ask the user to open ${hub.url}.`, true);
+    if (bridge) {
+      const o = await hub.play(bridge, 0, extra.signal);
+      if (o.status !== "completed") return text(describeOutcome(o, bridge));
+    }
     const outcome = await hub.play(main.script, from, extra.signal);
-    return text(describeOutcome(outcome, main.script.segments));
+    return text(describeOutcome(outcome, main.script));
   },
 );
 
 server.registerTool(
   "await_user",
   {
-    description: "Keep the walkthrough session open and wait for the user to type a follow-up question in the UI. Returns the question, 'ended', or 'idle' on timeout.",
+    description:
+      "Ask the user where to go next and wait for their answer in the UI. The prompt is spoken aloud and shown as your turn in the transcript; options appear as buttons, and the user can also type anything. Use it after an aside, at the end of a walkthrough, or before changing direction. Returns their answer, 'ended', or 'idle' on timeout.",
     inputSchema: {
-      prompt: z.string().optional().describe("Shown above the question box, e.g. 'Anything else about replication?'"),
+      prompt: z
+        .string()
+        .optional()
+        .describe("Spoken, conversational question, e.g. \"Want me to show an example run, or head back to the sync walkthrough?\""),
+      options: z
+        .array(z.string())
+        .max(4)
+        .optional()
+        .describe('Short button labels, e.g. ["Show an example run", "Back to the sync walkthrough"].'),
       timeout_seconds: z.number().int().optional().describe("Default 600."),
     },
   },
-  async ({ prompt, timeout_seconds }, extra) => {
+  async ({ prompt, options, timeout_seconds }, extra) => {
     if (!(await hub.ensureOpen())) return text(`No browser connected. Ask the user to open ${hub.url}.`, true);
-    const outcome = await hub.awaitQuestion(prompt ?? null, (timeout_seconds ?? 600) * 1000, extra.signal);
+    const outcome = await hub.awaitQuestion(prompt ?? null, options?.length ? options : undefined, (timeout_seconds ?? 600) * 1000, extra.signal);
     return text(describeOutcome(outcome));
   },
 );

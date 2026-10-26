@@ -21,7 +21,7 @@ const MIME: Record<string, string> = {
 export type Outcome =
   | { status: "completed" }
   | { status: "interrupted"; index: number; question: string; context: VisibleContext }
-  | { status: "question"; question: string; context: VisibleContext }
+  | { status: "question"; question: string; context: VisibleContext; choice?: number }
   | { status: "ended" }
   | { status: "idle" }
   | { status: "cancelled" };
@@ -45,9 +45,9 @@ export class Hub {
   private status: string | null = null;
   private current: { script: ResolvedScript; index: number } | null = null;
   private main: { script: ResolvedScript; index: number } | null = null;
-  private awaitPrompt: string | null = null;
+  private awaitPrompt: { prompt: string | null; options?: string[] } | null = null;
   private waiter: Waiter | null = null;
-  private queued: { question: string; context: VisibleContext } | null = null;
+  private queued: { question: string; context: VisibleContext; choice?: number } | null = null;
   private connectWaiters: (() => void)[] = [];
   private kokoro = new Kokoro();
 
@@ -97,7 +97,7 @@ export class Hub {
   /** Plays a script; resolves when it finishes, the user interjects, or ends the session. */
   play(script: ResolvedScript, startAt: number, signal?: AbortSignal, onSegment?: (i: number) => void): Promise<Outcome> {
     this.current = { script, index: startAt };
-    if (!script.aside) this.main = this.current;
+    if (!script.aside && !script.transition) this.main = this.current;
     this.awaitPrompt = null;
     this.status = null;
     this.queued = null;
@@ -109,15 +109,20 @@ export class Hub {
     return this.main;
   }
 
+  /** The main walkthrough, when the user has stepped away from it (an aside or transition is current). */
+  pausedMain() {
+    return this.main && this.current !== this.main ? this.main : null;
+  }
+
   /** Waits for a free-form question typed into the UI. */
-  awaitQuestion(prompt: string | null, timeoutMs: number, signal?: AbortSignal): Promise<Outcome> {
+  awaitQuestion(prompt: string | null, options: string[] | undefined, timeoutMs: number, signal?: AbortSignal): Promise<Outcome> {
     if (this.queued) {
       const q = this.queued;
       this.queued = null;
       return Promise.resolve({ status: "question", ...q });
     }
-    this.awaitPrompt = prompt;
-    this.broadcast({ type: "await", prompt });
+    this.awaitPrompt = { prompt, options };
+    this.broadcast({ type: "await", prompt, options });
     const timer = setTimeout(() => this.settle({ status: "idle" }), timeoutMs);
     return this.wait({ scriptId: null, resolve: () => {} }, signal).finally(() => clearTimeout(timer));
   }
@@ -155,11 +160,15 @@ export class Hub {
       case "interrupt":
         if (this.current && this.current.script.id === msg.id) this.current.index = msg.index;
         if (w) {
-          this.settle(w.scriptId ? { status: "interrupted", index: msg.index, question: msg.question, context: msg.context } : { status: "question", question: msg.question, context: msg.context });
+          this.settle(
+            w.scriptId
+              ? { status: "interrupted", index: msg.index, question: msg.question, context: msg.context }
+              : { status: "question", question: msg.question, context: msg.context, choice: msg.choice },
+          );
           this.setStatus("Thinking…");
         } else {
           // Nobody is listening right now; hand it to the next await_user call.
-          this.queued = { question: msg.question, context: msg.context };
+          this.queued = { question: msg.question, context: msg.context, choice: msg.choice };
           this.setStatus("Question queued — the agent will pick it up when it checks back in.");
         }
         break;
@@ -179,7 +188,7 @@ export class Hub {
     send({ type: "status", text: this.status });
     send({ type: "kokoro", status: this.kokoro.status });
     if (this.current) send({ type: "play", script: this.current.script, startAt: this.current.index, autoplay: false });
-    if (this.waiter && !this.waiter.scriptId) send({ type: "await", prompt: this.awaitPrompt });
+    if (this.waiter && !this.waiter.scriptId) send({ type: "await", prompt: this.awaitPrompt?.prompt ?? null, options: this.awaitPrompt?.options });
     sock.on("message", (data) => {
       try {
         this.onMessage(JSON.parse(String(data)) as ClientMessage);

@@ -34,7 +34,7 @@
       "narration": "On the browser side, the player speaks each segment and {a}fires actions as the voice reaches their markers. If an animation is still running, {b}it holds the voice until the screen catches up.",
       "actions": [
         { "do": "open", "path": "web/src/player.ts" },
-        { "do": "highlight", "at": "a", "symbol": "Player.segment" },
+        { "do": "highlight", "at": "a", "match": "const fireUpTo = (offset: number, duringSpeech: boolean) => {" },
         { "do": "highlight", "at": "b", "match": "// Hold the voice until the earlier action finishes." }
       ]
     }
