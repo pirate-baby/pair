@@ -63,7 +63,7 @@ export class Hub {
     }));
     const wss = new WebSocketServer({ noServer: true });
     server.on("upgrade", (req, socket, head) => {
-      if (req.url !== "/ws") return socket.destroy();
+      if (req.url !== "/ws" || !fromLocalPage(req)) return socket.destroy();
       wss.handleUpgrade(req, socket, head, (sock) => this.connect(sock));
     });
     for (let port = preferredPort; port < preferredPort + 20; port++) {
@@ -232,6 +232,7 @@ export class Hub {
   }
 
   private async handle(req: http.IncomingMessage, res: http.ServerResponse) {
+    if (!fromLocalPage(req)) return res.writeHead(403, { "content-type": "text/plain" }).end("Forbidden");
     const url = new URL(req.url ?? "/", "http://localhost");
     const json = (body: unknown, status = 200) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
 
@@ -285,4 +286,26 @@ function readBody(req: http.IncomingMessage): Promise<string> {
     req.on("end", () => resolve(body));
     req.on("error", reject);
   });
+}
+
+const LOCAL_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
+
+/**
+ * Only the Pair UI itself may talk to this server. The Host check defeats DNS
+ * rebinding (a remote page reaching us through its own domain); the Origin check
+ * stops other websites from opening the WebSocket (which would let them feed
+ * "user questions" to the agent) or POSTing to the API. Browsers always send
+ * Origin on WebSocket handshakes and cross-site POSTs; local tools like curl
+ * send none and are allowed.
+ */
+function fromLocalPage(req: http.IncomingMessage): boolean {
+  if (!LOCAL_HOST.test(req.headers.host ?? "")) return false;
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  try {
+    const u = new URL(origin);
+    return u.protocol === "http:" && LOCAL_HOST.test(u.host);
+  } catch {
+    return false;
+  }
 }
