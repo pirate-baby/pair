@@ -35,28 +35,30 @@ npm install
 npm run build
 ```
 
-Register the MCP server with Claude Code from inside the repo you want explained. The server uses its working directory, or the client's root, as the workspace:
+Install into your agent harnesses:
 
 ```sh
-claude mcp add pair -- node /path/to/pair/dist/server/server/src/index.js
+bin/installpair            # Claude Code, Codex, and opencode (whichever are installed)
+bin/installpair claude     # just one: claude | codex | opencode
 ```
 
-Install the skill:
+For each harness, the script registers the MCP server globally, raises the tool-call timeout to 30 minutes (walkthroughs keep a call open), and symlinks the `code-walkthrough` skill:
 
-```sh
-mkdir -p ~/.claude/skills && cp -r /path/to/pair/skills/code-walkthrough ~/.claude/skills/
-```
+| Harness | MCP config | Skill |
+| --- | --- | --- |
+| Claude Code | `claude mcp add --scope user`, plus `MCP_TOOL_TIMEOUT` in `~/.claude/settings.json` | `~/.claude/skills/` |
+| Codex | `[mcp_servers.pair]` in `~/.codex/config.toml` | `~/.agents/skills/` |
+| opencode | `mcp.pair` in `~/.config/opencode/opencode.json(c)` (comments preserved) | reuses one of the above, else `~/.config/opencode/skills/` |
 
-Then ask "walk me through how X works". The UI opens at http://localhost:7420. The browser needs one click before it's allowed to speak.
+Harnesses that aren't installed are skipped. Before the first edit, each config file is backed up to `<file>.pair-backup`. Re-running the script is safe.
 
-Other agents can use the same MCP server. Give them the contents of `SKILL.md` as instructions.
+Then, in any repo, ask "walk me through how X works". The UI opens at http://localhost:7420. The browser needs one click before it's allowed to speak.
 
 ### Options
 
 - `--root <dir>` / `PAIR_ROOT`: the repo to show. Defaults to the client's root, then the working directory.
 - `--port <n>` / `PAIR_PORT`: the UI port (default 7420). If it's taken, the next free port is used.
 - `PAIR_NO_OPEN=1`: don't auto-open a browser tab.
-- Long walkthroughs keep the tool call open. If your client times out MCP calls, raise its limit (in Claude Code: `MCP_TOOL_TIMEOUT`).
 
 ## Try it without an agent
 
