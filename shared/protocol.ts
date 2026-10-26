@@ -57,8 +57,26 @@ export interface VisibleContext {
   highlighted?: { path: string; start: number; end: number };
 }
 
+/** Lifecycle of the optional local Kokoro TTS engine. */
+export interface KokoroStatus {
+  state: "off" | "installing" | "loading" | "ready" | "error";
+  message?: string;
+  /** 0–1 while downloading the model. */
+  progress?: number;
+}
+
+/** Response of POST /api/tts/kokoro. */
+export interface KokoroSpeech {
+  /** Base64 WAV. */
+  audio: string;
+  duration: number;
+  /** Start time (seconds) of each word, keyed by character offset into the requested text. */
+  words: { offset: number; start: number }[];
+}
+
 export type ServerMessage =
   | { type: "hello"; root: string; rootName: string }
+  | { type: "kokoro"; status: KokoroStatus }
   | { type: "status"; text: string | null }
   | { type: "play"; script: ResolvedScript; startAt: number; autoplay: boolean }
   | { type: "await"; prompt: string | null }

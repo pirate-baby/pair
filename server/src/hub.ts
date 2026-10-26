@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { ClientMessage, ResolvedScript, ServerMessage, VisibleContext } from "../../shared/protocol.js";
 import type { Workspace } from "./files.js";
+import { Kokoro } from "./kokoro.js";
 
 const WEB_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../web");
 const MIME: Record<string, string> = {
@@ -48,8 +49,11 @@ export class Hub {
   private waiter: Waiter | null = null;
   private queued: { question: string; context: VisibleContext } | null = null;
   private connectWaiters: (() => void)[] = [];
+  private kokoro = new Kokoro();
 
-  constructor(private ws: Workspace) {}
+  constructor(private ws: Workspace) {
+    this.kokoro.onStatus = (status) => this.broadcast({ type: "kokoro", status });
+  }
 
   async listen(preferredPort: number) {
     const server = http.createServer((req, res) => this.handle(req, res).catch((e) => {
@@ -173,6 +177,7 @@ export class Hub {
     const send = (m: ServerMessage) => sock.send(JSON.stringify(m));
     send({ type: "hello", root: this.ws.root, rootName: this.ws.name });
     send({ type: "status", text: this.status });
+    send({ type: "kokoro", status: this.kokoro.status });
     if (this.current) send({ type: "play", script: this.current.script, startAt: this.current.index, autoplay: false });
     if (this.waiter && !this.waiter.scriptId) send({ type: "await", prompt: this.awaitPrompt });
     sock.on("message", (data) => {
@@ -195,6 +200,18 @@ export class Hub {
     const url = new URL(req.url ?? "/", "http://localhost");
     const json = (body: unknown, status = 200) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
 
+    if (url.pathname === "/api/tts/kokoro/enable" && req.method === "POST") {
+      this.kokoro.enable();
+      return json(this.kokoro.status);
+    }
+    if (url.pathname === "/api/tts/kokoro" && req.method === "POST") {
+      try {
+        const { text, voice, speed } = JSON.parse(await readBody(req));
+        return json(await this.kokoro.speak(String(text), String(voice || "af_heart"), Number(speed) || 1));
+      } catch (e) {
+        return json({ error: (e as Error).message }, 503);
+      }
+    }
     if (url.pathname === "/api/list") {
       try {
         return json(await this.ws.list(url.searchParams.get("dir") ?? ""));
@@ -221,4 +238,16 @@ export class Hub {
     res.writeHead(200, { "content-type": MIME[path.extname(file)] ?? "application/octet-stream" });
     createReadStream(file).pipe(res);
   }
+}
+
+function readBody(req: http.IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (d) => {
+      body += d;
+      if (body.length > 1_000_000) req.destroy(new Error("Request too large"));
+    });
+    req.on("end", () => resolve(body));
+    req.on("error", reject);
+  });
 }

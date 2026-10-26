@@ -59,6 +59,7 @@ export class Player {
     this.stop();
     this.set({ script, index: startAt, offset: 0, finished: false, playing: false });
     this.resumeAt = 0;
+    this.speaker.prefetch(script.segments[startAt]?.text ?? "");
     this.start(this.run, startAt);
     if (autoplay) this.play();
   }
@@ -165,9 +166,10 @@ export class Player {
     fireUpTo(this.resumeAt, false);
 
     let pos = this.resumeAt;
+    let prefetched = false;
     for (;;) {
       await this.gate(run);
-      const result = await this.speaker.speak(seg.text, pos, (offset) => {
+      const speaking = this.speaker.speak(seg.text, pos, (offset) => {
         if (run !== this.run) return;
         // Resume from the start of the current word.
         pos = starts.filter((s) => s <= offset).pop() ?? 0;
@@ -175,6 +177,11 @@ export class Player {
         this.set({ offset });
         fireUpTo(offset, true);
       });
+      // Request the next segment's audio only after this one's, so it doesn't queue ahead of it.
+      const upcoming = this.state.script!.segments[i + 1];
+      if (!prefetched && upcoming) this.speaker.prefetch(upcoming.text);
+      prefetched = true;
+      const result = await speaking;
       if (run !== this.run) throw new Cancelled();
       if (result === "end") break;
     }

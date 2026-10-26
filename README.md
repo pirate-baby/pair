@@ -60,6 +60,15 @@ Then, in any repo, ask "walk me through how X works". The UI opens at http://loc
 - `--port <n>` / `PAIR_PORT`: the UI port (default 7420). If it's taken, the next free port is used.
 - `PAIR_NO_OPEN=1`: don't auto-open a browser tab.
 
+## Voice
+
+Pick the speech engine in the controls under the transcript.
+
+- **System** (default) uses the browser's Web Speech voices. It's free and instant, but it sounds robotic. On macOS, it sounds much better with a *Premium* or *Enhanced* voice: download one under System Settings → Accessibility → Spoken Content → System Voice → Manage Voices. "Auto voice" picks it automatically.
+- **Kokoro** is a natural-sounding neural voice ([Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M)) that runs locally on the pair server. It needs no API key and nothing leaves your machine. Selecting it installs it the first time: `kokoro-js` goes into `~/.cache/pair/kokoro` (about 730 MB including the model), and the UI shows progress while it downloads. Until it's ready, the system voice keeps speaking. Kokoro reads acronyms letter by letter ("AWS" → "A-W-S").
+
+How Kokoro stays in sync: narration is synthesized one sentence at a time, and the next sentence is prefetched while the current one plays. The model reports how long each sound lasts, and the server maps those durations back onto your words, so highlights land on the right word. Set `PAIR_KOKORO_DIR` to install somewhere else. To uninstall, delete the directory.
+
 ## Try it without an agent
 
 ```sh
@@ -81,11 +90,12 @@ Layout:
 - `server/src/hub.ts`: HTTP and WebSocket server, and the blocking playback outcomes.
 - `web/src/player.ts`: speech-synced action scheduling.
 - `web/src/stage.ts`: animated explorer and editor operations.
-- `web/src/speech.ts`: Web Speech with word boundaries, plus an estimated-timing fallback.
+- `web/src/speech.ts`: speech engines (Web Speech with word boundaries and an estimated-timing fallback, or Kokoro clips).
+- `server/src/kokoro.ts`: on-demand Kokoro install, synthesis, and word alignment.
 
 ## Roadmap
 
 - Streaming segments, so playback starts before the whole script is written
-- Neural TTS with word timestamps (ElevenLabs, Cartesia), replacing Web Speech
+- A pronunciation lexicon for project-specific terms
 - Voice questions (speech to text) for interjections
 - Saving and sharing walkthroughs as JSON

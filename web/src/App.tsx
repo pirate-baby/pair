@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ClientMessage, ResolvedScript, ServerMessage } from "../../shared/protocol";
+import type { ClientMessage, KokoroStatus, ResolvedScript, ServerMessage } from "../../shared/protocol";
 import { Player, type PlayerState } from "./player";
-import { Speaker } from "./speech";
+import { KOKORO_VOICES, Speaker, type Engine } from "./speech";
 import { Stage, type TabsState } from "./stage";
 import { FileTree, tree } from "./tree";
 
@@ -10,7 +10,7 @@ type LogEntry =
   | { kind: "script"; key: number; script: ResolvedScript; from: number; reached: number };
 
 const PREFS_KEY = "pair.prefs";
-function loadPrefs(): { voice?: string; rate?: number; enabled?: boolean } {
+function loadPrefs(): { voice?: string; rate?: number; enabled?: boolean; engine?: Engine; kokoroVoice?: string } {
   try {
     return JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}");
   } catch {
@@ -47,6 +47,9 @@ export function App() {
   const [voiceOn, setVoiceOn] = useState(prefs.enabled ?? true);
   const [voiceURI, setVoiceURI] = useState<string>(prefs.voice ?? "");
   const [rate, setRate] = useState(prefs.rate ?? 1.05);
+  const [engine, setEngine] = useState<Engine>(prefs.engine ?? "system");
+  const [kokoroVoice, setKokoroVoice] = useState(prefs.kokoroVoice ?? "af_heart");
+  const [kokoro, setKokoro] = useState<KokoroStatus>({ state: "off" });
 
   const send = (m: ClientMessage) => socket.current?.readyState === WebSocket.OPEN && socket.current.send(JSON.stringify(m));
 
@@ -54,8 +57,17 @@ export function App() {
     player.speaker.enabled = voiceOn;
     player.speaker.voiceURI = voiceURI || null;
     player.speaker.rate = rate;
-    savePrefs({ enabled: voiceOn, voice: voiceURI, rate });
-  }, [player, voiceOn, voiceURI, rate]);
+    player.speaker.engine = engine;
+    player.speaker.kokoroVoice = kokoroVoice;
+    savePrefs({ enabled: voiceOn, voice: voiceURI, rate, engine, kokoroVoice });
+  }, [player, voiceOn, voiceURI, rate, engine, kokoroVoice]);
+
+  // Choosing Kokoro installs/loads it on the server (no-op once it's running).
+  useEffect(() => {
+    if (connected && engine === "kokoro" && (kokoro.state === "off" || kokoro.state === "error")) {
+      fetch("/api/tts/kokoro/enable", { method: "POST" }).catch(() => {});
+    }
+  }, [connected, engine, kokoro.state === "off"]);
 
   useEffect(() => {
     const update = () => setVoices(Speaker.voices());
@@ -100,7 +112,13 @@ export function App() {
         case "status":
           setStatus(m.text);
           break;
+        case "kokoro":
+          player.speaker.kokoroStatus = m.status;
+          setKokoro(m.status);
+          break;
         case "play": {
+          // A reconnect re-sends the current walkthrough; keep what's already loaded.
+          if (!m.autoplay && player.state.script?.id === m.script.id) break;
           setAwaitPrompt(undefined);
           setStatus(null);
           setLog((l) => [...l, { kind: "script", key: logKey++, script: m.script, from: m.startAt, reached: m.startAt }]);
@@ -203,21 +221,50 @@ export function App() {
           <label className="toggle">
             <input type="checkbox" checked={voiceOn} onChange={(e) => setVoiceOn(e.target.checked)} /> Voice
           </label>
-          <select value={voiceURI} onChange={(e) => setVoiceURI(e.target.value)} disabled={!voiceOn}>
-            <option value="">Auto voice</option>
-            {voices.map((v) => (
-              <option key={v.voiceURI} value={v.voiceURI}>
-                {v.name}
-                {v.localService ? "" : " (network)"}
-              </option>
-            ))}
+          <select value={engine} onChange={(e) => setEngine(e.target.value as Engine)} disabled={!voiceOn} title="Speech engine">
+            <option value="system">System</option>
+            <option value="kokoro">Kokoro</option>
           </select>
+          {engine === "kokoro" ? (
+            <select value={kokoroVoice} onChange={(e) => setKokoroVoice(e.target.value)} disabled={!voiceOn}>
+              {KOKORO_VOICES.map((v) => (
+                <option key={v.id} value={v.id}>{v.name}</option>
+              ))}
+            </select>
+          ) : (
+            <select value={voiceURI} onChange={(e) => setVoiceURI(e.target.value)} disabled={!voiceOn}>
+              <option value="">Auto voice</option>
+              {voices.map((v) => (
+                <option key={v.voiceURI} value={v.voiceURI}>
+                  {v.name}
+                  {v.localService ? "" : " (network)"}
+                </option>
+              ))}
+            </select>
+          )}
           <select value={rate} onChange={(e) => setRate(Number(e.target.value))}>
             {[0.9, 1, 1.05, 1.15, 1.3, 1.5].map((r) => (
               <option key={r} value={r}>{r}×</option>
             ))}
           </select>
         </div>
+
+        {voiceOn && engine === "kokoro" && kokoro.state !== "ready" && (
+          <div className={`engine-status ${kokoro.state === "error" ? "error" : ""}`}>
+            {kokoro.state === "error" ? (
+              <>
+                Kokoro failed: {kokoro.message}{" "}
+                <button className="link" onClick={() => fetch("/api/tts/kokoro/enable", { method: "POST" })}>Retry</button>
+              </>
+            ) : (
+              <>
+                <span className="spinner" /> {kokoro.message ?? "Starting Kokoro…"}
+                {kokoro.progress !== undefined && ` ${Math.round(kokoro.progress * 100)}%`}
+                <span className="engine-note">Using the system voice until it's ready.</span>
+              </>
+            )}
+          </div>
+        )}
 
         <div className={`ask ${awaitPrompt !== undefined ? "waiting" : ""}`}>
           {awaitPrompt !== undefined && <div className="ask-prompt">{awaitPrompt ?? "Any follow-up questions?"}</div>}
