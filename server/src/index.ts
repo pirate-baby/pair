@@ -38,7 +38,11 @@ const action = z.discriminatedUnion("do", [
 const segments = z
   .array(
     z.object({
-      narration: z.string().describe("What you say aloud, conversationally. Embed {id} markers right before the words that should trigger actions."),
+      narration: z
+        .string()
+        .describe(
+          "Spoken aloud by TTS, so write what you'd say, not what you'd type: no markdown, backticks, paths, or call syntax. Say identifiers as words ('the sync loop', \"this 'likes dash video ID' right here\") and let highlights show the code. Embed {id} markers right before the words that should trigger actions.",
+        ),
       actions: z.array(action).optional(),
     }),
   )

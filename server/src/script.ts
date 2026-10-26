@@ -113,6 +113,9 @@ export async function resolveScript(ws: Workspace, script: Script, aside?: { que
   for (const [si, seg] of (script.segments ?? []).entries()) {
     const { text, marks } = parseNarration(seg.narration ?? "");
     if (!text.trim()) errors.push(`segment ${si}: narration is empty.`);
+    const written = writtenStyle(text);
+    // An error, not a warning: warnings only reach the agent after playback, when it's too late to fix.
+    if (written) errors.push(`segment ${si}: narration is spoken aloud but contains ${written}. Rewrite it the way you'd say it (e.g. "this 'likes dash video ID' right here") and let the highlight show the code.`);
     if (text.length > 700) warnings.push(`segment ${si}: narration is long (${text.length} chars); one idea per segment keeps pacing natural.`);
 
     const actions: ResolvedAction[] = [];
@@ -186,4 +189,18 @@ export function matchSnippet(src: string, snippet: string): { start: number; end
     if (ok) hits.push({ start: i + 1, end: i + want.length });
   }
   return hits;
+}
+
+const WRITTEN_STYLE: [RegExp, string][] = [
+  [/`/, "backticks"],
+  [/\*\*|__/, "markdown emphasis"],
+  [/<[\w-]+>/, "a <placeholder>"],
+  [/\$\{/, "a template expression"],
+  [/\b[\w.-]+\/[\w./-]*\.\w{1,5}\b/, "a file path"],
+  [/\w\(\)|\w\([\w\s,:'"=]*\)/, "call syntax"],
+];
+
+/** Names the first written-code habit found in narration that will sound wrong when spoken, if any. */
+export function writtenStyle(text: string): string | null {
+  return WRITTEN_STYLE.find(([re]) => re.test(text))?.[1] ?? null;
 }
