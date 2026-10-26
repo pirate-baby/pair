@@ -106,3 +106,7 @@ Layout:
 - A pronunciation lexicon for project-specific terms
 - Voice questions (speech to text) for interjections
 - Saving and sharing walkthroughs as JSON
+
+## License
+
+[MIT](LICENSE)
