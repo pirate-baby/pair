@@ -11,6 +11,8 @@ Pair is an MCP that allows agents to walk you through code the way a human would
 The agent controls the cursor and can navigate the file explorer and code editor as it narrates. 
 Interrupt any time to divert the conversation, then return to the original answer with a click. 
 
+>[!WARNING]
+> Make sure you allow sound or this video won't make any sense! 
 
 https://github.com/user-attachments/assets/d4865547-c69d-45f3-8a83-efeb903307b4
 
