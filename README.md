@@ -16,7 +16,7 @@ agent ──MCP (stdio)──▶ pair server ──WebSocket──▶ browser pl
 2. **It writes a script** made of segments. Each segment has narration with `{marker}`s and actions anchored to those markers.
 3. **`present_walkthrough` validates the script against the repo.** It checks paths, tree-sitter symbols, exact-snippet matches and line ranges. If anything is wrong, nothing plays and the agent gets an error list to fix. This is what keeps it from pointing at made-up code.
 4. **The browser plays the script.** Actions fire as the voice reaches each marker. If an animation is still running, the voice waits for it.
-5. **The tool call blocks until something happens**: playback finishes, you pause and ask a question, or you end the session. Your question comes back as the tool result. The agent answers with a short aside walkthrough and then calls `resume_walkthrough`.
+5. **The tool call blocks until something happens**: playback finishes, you pause and ask a question, or you end the session. Your question comes back as the tool result. The agent answers with a short aside, then asks where to go next ("Want to see an example run, or head back to the sync walkthrough?"). It doesn't snap back on its own. If you choose to return, it bridges back in a sentence before picking up where you paused.
 
 ### MCP tools
 
@@ -25,8 +25,8 @@ agent ──MCP (stdio)──▶ pair server ──WebSocket──▶ browser pl
 | `show_status` | Open the UI and show "Looking into…" while investigating |
 | `outline` | List a file's symbols with line ranges (tree-sitter) |
 | `present_walkthrough` | Validate and play a script. Blocks; returns `completed` / `interrupted` (with your question and what was on screen) / `ended` |
-| `resume_walkthrough` | Continue the main walkthrough after an aside |
-| `await_user` | Keep the session open for follow-up questions typed in the UI |
+| `resume_walkthrough` | Return to the main walkthrough after an aside, with an optional spoken `intro` that bridges back |
+| `await_user` | Ask where to go next: the prompt is spoken and shown as the agent's turn, and `options` render as buttons (typing anything else also works) |
 
 ## Setup
 
