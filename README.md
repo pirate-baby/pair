@@ -14,6 +14,11 @@ Interrupt any time to divert the conversation, then return to the original answe
 
 https://github.com/user-attachments/assets/d4865547-c69d-45f3-8a83-efeb903307b4
 
+>[!NOTE]
+> Some notes on the video above:
+> - the cursor, highlights, and scrolling are the agent, not the user (they are the navigator)
+> - the narration stops when you start typing a question (I interrupt to ask about envars)
+> - clicking the "go back to X" button interrupts and returns to the original narration 
 
 
 Uses your agent harness and then either browser native voice or (optionally) Kokoro as a really good local voice model. 
