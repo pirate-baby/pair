@@ -149,7 +149,9 @@ export function App() {
   };
 
   const transcriptEnd = useRef<HTMLDivElement>(null);
-  useEffect(() => transcriptEnd.current?.scrollIntoView({ block: "end", behavior: "smooth" }), [log.length, ps.index]);
+  useEffect(() => {
+    transcriptEnd.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+  }, [log.length, ps.index]);
 
   const lastScriptKey = [...log].reverse().find((e) => e.kind === "script")?.key;
 
