@@ -39,6 +39,9 @@ export function App() {
   const [status, setStatus] = useState<string | null>(null);
   // Set while the agent is waiting on the user (await_user); options render as buttons.
   const shownPrompt = useRef<string | null>(null);
+  // Set once the session is over: { message } is the agent's goodbye (null if the user ended it).
+  const [ended, setEnded] = useState<{ message: string | null } | null>(null);
+  const [closeBlocked, setCloseBlocked] = useState(false);
   const [pausedMain, setPausedMain] = useState<{ title: string; index: number; total: number } | null>(null);
   const [awaiting, setAwaiting] = useState<{ prompt: string | null; options: string[] } | undefined>(undefined);
   const [ps, setPs] = useState<PlayerState>(player.state);
@@ -115,7 +118,20 @@ export function App() {
           break;
         case "status":
           setStatus(m.text);
+          if (m.text) setEnded(null);
           break;
+        case "ended": {
+          setEnded({ message: m.message });
+          setAwaiting(undefined);
+          setStatus(null);
+          const goodbye = m.message;
+          if (goodbye && goodbye !== shownPrompt.current) {
+            shownPrompt.current = goodbye;
+            setLog((l) => [...l, { kind: "agent", text: goodbye }]);
+            player.speaker.speak(goodbye, 0, () => {}).catch(() => {});
+          }
+          break;
+        }
         case "main":
           setPausedMain(m.paused);
           break;
@@ -126,6 +142,7 @@ export function App() {
         case "play": {
           // A reconnect re-sends the current walkthrough; keep what's already loaded.
           if (!m.autoplay && player.state.script?.id === m.script.id) break;
+          setEnded(null);
           setAwaiting(undefined);
           setStatus(null);
           setLog((l) => [...l, { kind: "script", key: logKey++, script: m.script, from: m.startAt, reached: m.startAt }]);
@@ -135,6 +152,7 @@ export function App() {
           break;
         }
         case "await": {
+          setEnded(null);
           setAwaiting({ prompt: m.prompt, options: m.options ?? [] });
           setStatus(null);
           const prompt = m.prompt;
@@ -258,6 +276,22 @@ export function App() {
               <ScriptView key={e.key} entry={e} live={e.key === lastScriptKey ? ps : null} onSeek={(i) => player.seek(i)} />
             ),
           )}
+          {ended && (
+            <div className="session-ended">
+              <div>Session ended. Ask your agent another question to start a new walkthrough.</div>
+              <button
+                className="secondary"
+                onClick={() => {
+                  window.close();
+                  // Browsers only let script-opened tabs close themselves.
+                  setTimeout(() => setCloseBlocked(true), 300);
+                }}
+              >
+                Close tab
+              </button>
+              {closeBlocked && <div className="close-note">Your browser won't let this page close itself. Close the tab whenever you're ready.</div>}
+            </div>
+          )}
           {status && (
             <div className="status">
               <span className="spinner" /> {status}
@@ -337,7 +371,16 @@ export function App() {
           )}
           <textarea
             value={question}
-            placeholder={ps.playing ? "Interject — typing pauses the walkthrough…" : awaiting?.options.length ? "…or ask something else" : "Ask a question…"}
+            placeholder={
+              ended
+                ? "Session ended. Continue in your agent's chat."
+                : ps.playing
+                  ? "Interject — typing pauses the walkthrough…"
+                  : awaiting?.options.length
+                    ? "…or ask something else"
+                    : "Ask a question…"
+            }
+            disabled={!!ended}
             onChange={(e) => {
               setQuestion(e.target.value);
               if (e.target.value) player.pause();
@@ -353,7 +396,7 @@ export function App() {
           <div className="ask-actions">
             <button onClick={() => ask()} disabled={!question.trim()}>Ask</button>
             {awaiting && (
-              <button className="secondary" onClick={() => (send({ type: "end" }), setAwaiting(undefined))}>End session</button>
+              <button className="secondary" onClick={() => (send({ type: "end" }), setAwaiting(undefined), setEnded({ message: null }))}>End session</button>
             )}
           </div>
         </div>

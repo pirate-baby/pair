@@ -84,6 +84,8 @@ export type ServerMessage =
   | { type: "await"; prompt: string | null; options?: string[] }
   /** The main walkthrough while the user has stepped away from it (null when it's current or done). */
   | { type: "main"; paused: { title: string; index: number; total: number } | null }
+  /** The session is over (the agent said goodbye, or the user ended it). */
+  | { type: "ended"; message: string | null }
   | { type: "stop" };
 
 export type ClientMessage =

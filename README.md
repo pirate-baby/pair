@@ -26,6 +26,7 @@ agent ──MCP (stdio)──▶ pair server ──WebSocket──▶ browser pl
 | `outline` | List a file's symbols with line ranges (tree-sitter) |
 | `present_walkthrough` | Validate and play a script. Blocks; returns `completed` / `interrupted` (with your question and what was on screen) / `ended` |
 | `resume_walkthrough` | Return to the main walkthrough after an aside, with an optional spoken `intro` that bridges back |
+| `end_session` | Say a short spoken goodbye and close the session in the UI (instead of leaving it waiting) |
 | `await_user` | Ask where to go next: the prompt is spoken and shown as the agent's turn, and `options` render as buttons (typing anything else also works) |
 
 ## Setup

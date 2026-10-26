@@ -36,6 +36,9 @@ interface Waiter {
 
 const log = (...args: unknown[]) => console.error("[pair]", ...args);
 
+/** How long "Thinking…" may show after the user answers before we assume the agent has gone quiet. */
+const AGENT_SILENCE_MS = Number(process.env.PAIR_AGENT_SILENCE_MS) || 90_000;
+
 /**
  * Owns the browser UI: serves it, tracks connected tabs, and turns the
  * asynchronous player events into the blocking outcomes MCP tools return.
@@ -52,6 +55,8 @@ export class Hub {
   private queued: Outcome | null = null;
   private connectWaiters: (() => void)[] = [];
   private kokoro = new Kokoro();
+  private ended: { message: string | null } | null = null;
+  private silenceTimer: NodeJS.Timeout | null = null;
 
   constructor(private ws: Workspace) {
     this.kokoro.onStatus = (status) => this.broadcast({ type: "kokoro", status });
@@ -94,6 +99,36 @@ export class Hub {
   setStatus(text: string | null) {
     this.status = text;
     this.broadcast({ type: "status", text });
+  }
+
+  /** Called on every agent tool call: the agent is still engaged. */
+  touch() {
+    if (this.silenceTimer) clearTimeout(this.silenceTimer);
+    this.silenceTimer = null;
+    this.ended = null;
+  }
+
+  /** After the user answers, the agent should do *something*. If it never does, don't spin forever. */
+  private expectAgent() {
+    if (this.silenceTimer) clearTimeout(this.silenceTimer);
+    this.silenceTimer = setTimeout(() => {
+      this.silenceTimer = null;
+      this.setStatus("No reply from the agent. It may have finished, so continue in its chat, or ask again here.");
+    }, AGENT_SILENCE_MS);
+    this.silenceTimer.unref();
+  }
+
+  /** Ends the session: the UI says goodbye (if given) and stops taking questions. */
+  endSession(message: string | null) {
+    this.touch();
+    this.current = this.main = null;
+    this.awaitPrompt = null;
+    this.queued = null;
+    this.status = null;
+    this.ended = { message };
+    this.settle({ status: "ended" });
+    this.broadcast({ type: "ended", message });
+    this.broadcastMain();
   }
 
   /** Plays a script; resolves when it finishes, the user interjects, or ends the session. */
@@ -172,6 +207,7 @@ export class Hub {
       case "interrupt":
         if (this.current && this.current.script.id === msg.id) this.current.index = msg.index;
         if (w) {
+          this.expectAgent();
           this.settle(
             w.scriptId
               ? { status: "interrupted", index: msg.index, question: msg.question, context: msg.context }
@@ -188,6 +224,7 @@ export class Hub {
         if (!this.pausedMain()) break;
         const o: Outcome = { status: "return", context: msg.context };
         if (w) {
+          this.expectAgent();
           this.settle(o);
           this.setStatus("Heading back…");
         } else {
@@ -197,11 +234,7 @@ export class Hub {
         break;
       }
       case "end":
-        this.current = this.main = null;
-        this.awaitPrompt = null;
-        this.broadcastMain();
-        this.settle({ status: "ended" });
-        this.setStatus("Session ended.");
+        this.endSession(null);
         break;
     }
   }
@@ -211,6 +244,7 @@ export class Hub {
     const send = (m: ServerMessage) => sock.send(JSON.stringify(m));
     send({ type: "hello", root: this.ws.root, rootName: this.ws.name });
     send({ type: "status", text: this.status });
+    if (this.ended) send({ type: "ended", message: this.ended.message });
     send({ type: "kokoro", status: this.kokoro.status });
     send(this.mainMessage());
     if (this.current) send({ type: "play", script: this.current.script, startAt: this.current.index, autoplay: false });

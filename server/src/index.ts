@@ -8,7 +8,7 @@ import { z } from "zod";
 import type { ResolvedScript, Script } from "../../shared/protocol.js";
 import { Workspace } from "./files.js";
 import { Hub, type Outcome } from "./hub.js";
-import { resolveScript } from "./script.js";
+import { resolveScript, writtenStyle } from "./script.js";
 import { outline, supportsSymbols } from "./symbols.js";
 
 const argv = process.argv.slice(2);
@@ -60,6 +60,10 @@ const ASK_NEXT =
   "Don't resume or change direction on your own. Ask where to go next with await_user: a short spoken prompt plus 2-3 options, " +
   "e.g. go deeper on what you just showed, or return to the main walkthrough (name it and where you were).";
 
+const IF_DONE =
+  "If their answer means they're finished (\"that covered it\", \"thanks\", \"I'm good\"), call end_session with a short spoken goodbye. " +
+  "Never just stop: the UI shows the user a spinner until you do something.";
+
 function describeOutcome(o: Outcome, played?: ResolvedScript): string {
   switch (o.status) {
     case "completed": {
@@ -72,7 +76,7 @@ function describeOutcome(o: Outcome, played?: ResolvedScript): string {
           main ? "If they choose to go back, call resume_walkthrough with an intro that bridges back (one or two spoken sentences)." : "",
         ].filter(Boolean).join("\n");
       }
-      return "Walkthrough finished playing. If the user is watching the UI, call await_user with a spoken prompt and a few follow-up options (or end your turn).";
+      return "Walkthrough finished playing. Call await_user with a spoken prompt and a few follow-up options, including one to finish (e.g. \"That covers it\"). When the user is done, call end_session.";
     }
     case "interrupted":
       return [
@@ -90,6 +94,7 @@ function describeOutcome(o: Outcome, played?: ResolvedScript): string {
         `What they could see: ${JSON.stringify(o.context)}`,
         main ? `Still paused: ${main}. If they chose to go back, call resume_walkthrough (with an intro).` : "",
         "",
+        IF_DONE,
         "Otherwise investigate, answer with present_walkthrough (aside_for set to the question), and when it finishes ask where to go next with await_user.",
       ].filter(Boolean).join("\n");
     }
@@ -102,7 +107,7 @@ function describeOutcome(o: Outcome, played?: ResolvedScript): string {
     case "ended":
       return "The user ended the walkthrough session. Stop presenting.";
     case "idle":
-      return "No question arrived before the timeout. The session is still open; call await_user again or end your turn.";
+      return "No question arrived before the timeout. Call end_session with a short goodbye (or await_user again if you expect more).";
     case "cancelled":
       return "Playback was cancelled (superseded or the request was aborted).";
   }
@@ -120,6 +125,7 @@ server.registerTool(
     inputSchema: { message: z.string() },
   },
   async ({ message }) => {
+    hub.touch();
     const connected = await hub.ensureOpen();
     hub.setStatus(message);
     return text(connected ? `Status shown at ${hub.url}.` : `Status set, but no browser connected yet. Ask the user to open ${hub.url}.`);
@@ -133,6 +139,7 @@ server.registerTool(
     inputSchema: { path: z.string() },
   },
   async ({ path: p }) => {
+    hub.touch();
     try {
       const rel = ws.rel(p);
       if (!supportsSymbols(rel)) return text(`No symbol support for ${rel}; use match or lines anchors.`, true);
@@ -159,6 +166,7 @@ server.registerTool(
     },
   },
   async ({ title, segments, aside_for }, extra) => {
+    hub.touch();
     const result = await resolveScript(ws, { title, segments } as Script, aside_for ? { question: aside_for } : undefined);
     if (!result.script) return text(`Script not played. Fix these and call again:\n- ${result.errors.join("\n- ")}`, true);
     if (!(await hub.ensureOpen())) return text(`No browser connected. Ask the user to open ${hub.url}, then retry.`, true);
@@ -189,6 +197,7 @@ server.registerTool(
     },
   },
   async ({ from_segment, intro }, extra) => {
+    hub.touch();
     const main = hub.mainScript();
     if (!main) return text("There is no walkthrough to resume.", true);
     const from = Math.max(0, Math.min(from_segment ?? main.index, main.script.segments.length - 1));
@@ -222,14 +231,34 @@ server.registerTool(
         .array(z.string())
         .max(4)
         .optional()
-        .describe('Short button labels, e.g. ["Show an example run", "Back to the sync walkthrough"].'),
+        .describe('Short button labels, e.g. ["Show an example run", "Back to the sync walkthrough"]. At the end of a walkthrough, include a way to finish, e.g. "That covers it" (then call end_session if chosen).'),
       timeout_seconds: z.number().int().optional().describe("Default 600."),
     },
   },
   async ({ prompt, options, timeout_seconds }, extra) => {
+    hub.touch();
     if (!(await hub.ensureOpen())) return text(`No browser connected. Ask the user to open ${hub.url}.`, true);
     const outcome = await hub.awaitQuestion(prompt ?? null, options?.length ? options : undefined, (timeout_seconds ?? 600) * 1000, extra.signal);
     return text(describeOutcome(outcome));
+  },
+);
+
+server.registerTool(
+  "end_session",
+  {
+    description:
+      "Close the walkthrough session when the user is done: the goodbye is spoken and shown, and the UI stops taking questions. Call this instead of ending your turn silently.",
+    inputSchema: {
+      message: z.string().optional().describe('A short spoken goodbye, e.g. "Glad that helped. Happy hacking!"'),
+    },
+  },
+  async ({ message }) => {
+    hub.touch();
+    const goodbye = message?.trim() || null;
+    const written = goodbye && writtenStyle(goodbye);
+    if (written) return text(`Not sent: the goodbye is spoken aloud but contains ${written}. Rewrite it as speech.`, true);
+    hub.endSession(goodbye);
+    return text("Session ended. The user sees your goodbye; you can end your turn.");
   },
 );
 
