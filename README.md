@@ -30,19 +30,19 @@ agent ──MCP (stdio)──▶ pair server ──WebSocket──▶ browser pl
 
 ## Setup
 
-```sh
-npm install
-npm run build
-```
-
-Install into your agent harnesses:
+On macOS, with Node.js 22.12 or newer installed (`brew install node` if you don't have it):
 
 ```sh
-bin/installpair            # Claude Code, Codex, and opencode (whichever are installed)
-bin/installpair claude     # just one: claude | codex | opencode
+git clone <this repo> pair && cd pair
+./install.sh               # Claude Code, Codex, and opencode (whichever are installed)
+./install.sh claude        # just one: claude | codex | opencode
 ```
 
-For each harness, the script registers the MCP server globally, raises the tool-call timeout to 30 minutes (walkthroughs keep a call open), and symlinks the `code-walkthrough` skill:
+The script checks for Node, then installs dependencies and builds. For each harness, it then:
+
+- registers the MCP server globally, using the absolute path to `node`, so harnesses launched from the Dock or an IDE work even if their PATH differs from your shell's
+- raises the tool-call timeout to 30 minutes, because a walkthrough keeps its call open
+- symlinks the `code-walkthrough` skill
 
 | Harness | MCP config | Skill |
 | --- | --- | --- |
@@ -50,7 +50,7 @@ For each harness, the script registers the MCP server globally, raises the tool-
 | Codex | `[mcp_servers.pair]` in `~/.codex/config.toml` | `~/.agents/skills/` |
 | opencode | `mcp.pair` in `~/.config/opencode/opencode.json(c)` (comments preserved) | reuses one of the above, else `~/.config/opencode/skills/` |
 
-Harnesses that aren't installed are skipped. Before the first edit, each config file is backed up to `<file>.pair-backup`. Re-running the script is safe.
+Harnesses that aren't installed are skipped. Before the first edit, each config file is backed up to `<file>.pair-backup`. Re-running is safe, and it's also how you update after a `git pull`. `bin/installpair` is a symlink to the same script.
 
 Then, in any repo, ask "walk me through how X works". The UI opens at http://localhost:7420. The browser needs one click before it's allowed to speak.
 
