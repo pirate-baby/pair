@@ -1,0 +1,89 @@
+# Pair
+
+Ask an agent "how does our regional replication work?" and watch it walk you through the code the way a teammate would. It opens folders, clicks into files, scrolls to the right place and highlights lines, all in sync with a spoken explanation. You can pause at any point and ask a question.
+
+Pair is a standalone editor UI plus an MCP server, so any MCP-capable agent can drive it. A skill (`skills/code-walkthrough/SKILL.md`) teaches the agent how to present.
+
+## How it works
+
+```
+agent ──MCP (stdio)──▶ pair server ──WebSocket──▶ browser player
+        investigate       validate script            speak + animate
+        (grep, read)      (tree-sitter)              (Monaco, fake cursor)
+```
+
+1. **The agent investigates silently**, using its own tools, and calls `show_status` so you can see it's working.
+2. **It writes a script** made of segments. Each segment has narration with `{marker}`s and actions anchored to those markers.
+3. **`present_walkthrough` validates the script against the repo.** It checks paths, tree-sitter symbols, exact-snippet matches and line ranges. If anything is wrong, nothing plays and the agent gets an error list to fix. This is what keeps it from pointing at made-up code.
+4. **The browser plays the script.** Actions fire as the voice reaches each marker. If an animation is still running, the voice waits for it.
+5. **The tool call blocks until something happens**: playback finishes, you pause and ask a question, or you end the session. Your question comes back as the tool result. The agent answers with a short aside walkthrough and then calls `resume_walkthrough`.
+
+### MCP tools
+
+| Tool | Purpose |
+| --- | --- |
+| `show_status` | Open the UI and show "Looking into…" while investigating |
+| `outline` | List a file's symbols with line ranges (tree-sitter) |
+| `present_walkthrough` | Validate and play a script. Blocks; returns `completed` / `interrupted` (with your question and what was on screen) / `ended` |
+| `resume_walkthrough` | Continue the main walkthrough after an aside |
+| `await_user` | Keep the session open for follow-up questions typed in the UI |
+
+## Setup
+
+```sh
+npm install
+npm run build
+```
+
+Register the MCP server with Claude Code from inside the repo you want explained. The server uses its working directory, or the client's root, as the workspace:
+
+```sh
+claude mcp add pair -- node /path/to/pair/dist/server/server/src/index.js
+```
+
+Install the skill:
+
+```sh
+mkdir -p ~/.claude/skills && cp -r /path/to/pair/skills/code-walkthrough ~/.claude/skills/
+```
+
+Then ask "walk me through how X works". The UI opens at http://localhost:7420. The browser needs one click before it's allowed to speak.
+
+Other agents can use the same MCP server. Give them the contents of `SKILL.md` as instructions.
+
+### Options
+
+- `--root <dir>` / `PAIR_ROOT`: the repo to show. Defaults to the client's root, then the working directory.
+- `--port <n>` / `PAIR_PORT`: the UI port (default 7420). If it's taken, the next free port is used.
+- `PAIR_NO_OPEN=1`: don't auto-open a browser tab.
+- Long walkthroughs keep the tool call open. If your client times out MCP calls, raise its limit (in Claude Code: `MCP_TOOL_TIMEOUT`).
+
+## Try it without an agent
+
+```sh
+npm run play -- examples/pair-tour.json --root .
+```
+
+This plays a hand-written tour of this repo. It's a quick way to test player changes.
+
+## Development
+
+- `npm run typecheck` checks the server and the web code.
+- `npm run dev:web` starts the Vite dev server with hot reload. It proxies `/api` and `/ws` to a pair server that's already running on `PAIR_PORT`.
+
+Layout:
+
+- `server/src/index.ts`: MCP tools and the `play` CLI.
+- `server/src/script.ts`: script validation and resolution.
+- `server/src/symbols.ts`: tree-sitter outlines.
+- `server/src/hub.ts`: HTTP and WebSocket server, and the blocking playback outcomes.
+- `web/src/player.ts`: speech-synced action scheduling.
+- `web/src/stage.ts`: animated explorer and editor operations.
+- `web/src/speech.ts`: Web Speech with word boundaries, plus an estimated-timing fallback.
+
+## Roadmap
+
+- Streaming segments, so playback starts before the whole script is written
+- Neural TTS with word timestamps (ElevenLabs, Cartesia), replacing Web Speech
+- Voice questions (speech to text) for interjections
+- Saving and sharing walkthroughs as JSON

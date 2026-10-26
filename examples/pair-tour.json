@@ -1,0 +1,42 @@
+{
+  "title": "How a walkthrough gets from the agent to your screen",
+  "segments": [
+    {
+      "narration": "Everything starts in the MCP server's entry point. {a}The agent calls present_walkthrough with a finished script, {b}and the first thing we do is resolve it against the repo.",
+      "actions": [
+        { "do": "open", "path": "server/src/index.ts" },
+        { "do": "highlight", "at": "a", "match": "\"present_walkthrough\"," },
+        { "do": "highlight", "at": "b", "match": "const result = await resolveScript(ws, { title, segments }" }
+      ]
+    },
+    {
+      "narration": "Resolution lives in script dot t s. {a}For every action we check the file exists, and {b}symbol anchors get looked up with tree-sitter, so the agent can't point at code that isn't there.",
+      "actions": [
+        { "do": "open", "path": "server/src/script.ts" },
+        { "do": "highlight", "at": "a", "match": "export async function resolveScript(" },
+        { "do": "highlight", "at": "b", "match": "if (a.symbol) {" }
+      ]
+    },
+    {
+      "narration": "The symbol table itself comes from {a}this outline function. It walks the syntax tree and records every class, function and method with its line range.",
+      "actions": [
+        { "do": "highlight", "at": "a", "path": "server/src/symbols.ts", "symbol": "outline" }
+      ]
+    },
+    {
+      "narration": "Once the script is valid, the hub sends it to the browser and {a}blocks until something happens: the walkthrough finishes, or you pause and ask a question.",
+      "actions": [
+        { "do": "open", "path": "server/src/hub.ts" },
+        { "do": "highlight", "at": "a", "symbol": "Hub.play" }
+      ]
+    },
+    {
+      "narration": "On the browser side, the player speaks each segment and {a}fires actions as the voice reaches their markers. If an animation is still running, {b}it holds the voice until the screen catches up.",
+      "actions": [
+        { "do": "open", "path": "web/src/player.ts" },
+        { "do": "highlight", "at": "a", "symbol": "Player.segment" },
+        { "do": "highlight", "at": "b", "match": "// Hold the voice until the earlier action finishes." }
+      ]
+    }
+  ]
+}
