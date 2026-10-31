@@ -48,6 +48,13 @@ While a session is running, Pair serves its UI on `http://localhost:7420` (bound
 ## Usage
 In your harness of choice, tell the agent to walk you through or explain some part of your repo. Pair takes it from there. 
 
+### Sharing walkthroughs
+After a walkthrough plays, ask the agent to "share this walkthrough on the PR". It posts a comment on the current branch's pull request with the [GitHub CLI](https://cli.github.com) (run `gh auth login` first). The comment holds a collapsed transcript, for anyone without Pair, and the script itself. Nothing is added to your codebase, and only people who can see the repo can see it.
+
+To watch one, ask your agent to "play the walkthrough on PR 123". It plays the newest walkthrough on that PR exactly as written, without regenerating it, and you can still interrupt with questions. Walkthroughs point at symbols and code snippets rather than line numbers, so they're checked against your checkout. If you're on a different commit, Pair tells you which files have changed since the walkthrough was written.
+
+No PR? Ask for a gist instead. Secret gists are unlisted, but anyone with the link can read them.
+
 
 
 ## License

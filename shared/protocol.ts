@@ -29,6 +29,19 @@ export interface Script {
   segments: ScriptSegment[];
 }
 
+/**
+ * A walkthrough saved for sharing (e.g. as a gist): the authored script, not the
+ * resolved one, so it re-validates against the viewer's checkout when played.
+ */
+export interface SharedWalkthrough extends Script {
+  /** Format version. */
+  pair: 1;
+  /** The code it was written against. */
+  source?: { repo?: string; commit?: string; branch?: string };
+  /** ISO timestamp. */
+  created?: string;
+}
+
 /** Actions after server-side validation: concrete paths and line ranges. */
 export type ResolvedAction =
   | { do: "open"; path: string; offset: number }
