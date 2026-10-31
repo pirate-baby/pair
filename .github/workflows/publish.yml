@@ -1,0 +1,28 @@
+# Publishes to npm when a GitHub release is published.
+# Uses npm trusted publishing (OIDC), so no NPM_TOKEN secret is needed: on
+# npmjs.com, add this repo + workflow as a trusted publisher for pair-mcp.
+name: Publish to npm
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - run: npm install -g npm@latest # trusted publishing needs npm >= 11.5
+      - run: npm ci
+      - run: npm run typecheck
+      - name: Check the tag matches package.json
+        run: test "v$(node -p 'require("./package.json").version')" = "${GITHUB_REF_NAME}"
+      - run: npm publish # prepack builds dist/
