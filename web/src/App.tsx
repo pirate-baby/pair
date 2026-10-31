@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ClientMessage, KokoroStatus, ResolvedScript, ServerMessage } from "../../shared/protocol";
+import type { ClientMessage, KokoroStatus, ResolvedScript, ServerMessage, SessionInfo, SharedPreview } from "../../shared/protocol";
 import { Player, type PlayerState } from "./player";
 import { KOKORO_VOICES, Speaker, type Engine } from "./speech";
 import { Stage, type TabsState } from "./stage";
@@ -27,6 +27,28 @@ function savePrefs(p: object) {
 }
 
 let logKey = 0;
+
+/** A walkthrough opened from a "Play in pair" link (/play?src=…), shown for confirmation before it plays. */
+interface SharedLink {
+  src: string;
+  preview?: SharedPreview;
+  error?: string;
+  starting?: boolean;
+}
+
+function linkFromUrl(): SharedLink | null {
+  if (location.pathname !== "/play") return null;
+  return { src: new URLSearchParams(location.search).get("src") ?? "" };
+}
+
+async function postShared<T>(action: "preview" | "play", src: string): Promise<T> {
+  const res = await fetch(`/api/shared/${action}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ src }) });
+  const body = await res.json();
+  if (!res.ok || body.error) throw new Error(body.error ?? `HTTP ${res.status}`);
+  return body as T;
+}
+
+const shortCommit = (c?: string) => c?.slice(0, 10);
 
 export function App() {
   const stage = useMemo(() => new Stage(), []);
@@ -57,6 +79,7 @@ export function App() {
   const [engine, setEngine] = useState<Engine>(prefs.engine ?? "system");
   const [kokoroVoice, setKokoroVoice] = useState(prefs.kokoroVoice ?? "af_heart");
   const [kokoro, setKokoro] = useState<KokoroStatus>({ state: "off" });
+  const [shared, setShared] = useState<SharedLink | null>(linkFromUrl);
 
   const send = (m: ClientMessage) => socket.current?.readyState === WebSocket.OPEN && socket.current.send(JSON.stringify(m));
 
@@ -68,6 +91,29 @@ export function App() {
     player.speaker.kokoroVoice = kokoroVoice;
     savePrefs({ enabled: voiceOn, voice: voiceURI, rate, engine, kokoroVoice });
   }, [player, voiceOn, voiceURI, rate, engine, kokoroVoice]);
+
+  // A "Play in pair" link: load the walkthrough and check it against this checkout before offering to play.
+  useEffect(() => {
+    if (!connected || !shared || shared.preview || shared.error) return;
+    if (!shared.src) return setShared({ ...shared, error: "This link doesn't say which walkthrough to play." });
+    postShared<SharedPreview>("preview", shared.src)
+      .then((preview) => setShared((s) => s && { ...s, preview }))
+      .catch((e) => setShared((s) => s && { ...s, error: (e as Error).message }));
+  }, [connected, shared]);
+
+  const closeShared = () => {
+    history.replaceState(null, "", "/");
+    setShared(null);
+  };
+
+  const playShared = () => {
+    if (!shared) return;
+    setShared({ ...shared, starting: true });
+    // This click also unlocks speech, so the walkthrough can start talking right away.
+    postShared("play", shared.src)
+      .then(closeShared)
+      .catch((e) => setShared((s) => s && { ...s, starting: false, error: (e as Error).message }));
+  };
 
   // Choosing Kokoro installs/loads it on the server (no-op once it's running).
   useEffect(() => {
@@ -402,12 +448,96 @@ export function App() {
         </div>
       </div>
 
+      {shared && (
+        <div className="gesture">
+          <SharedCard link={shared} rootName={rootName} connected={connected} onPlay={playShared} onClose={closeShared} />
+        </div>
+      )}
+
       {needsGesture && (
         <div className="gesture" onClick={() => (setNeedsGesture(false), player.play())}>
           <button>▶ Start walkthrough</button>
           <div>Your browser needs one click before it can speak.</div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** The confirmation card for a "Play in pair" link, including a picker for other running sessions. */
+function SharedCard({ link, rootName, connected, onPlay, onClose }: { link: SharedLink; rootName: string; connected: boolean; onPlay: () => void; onClose: () => void }) {
+  const p = link.preview;
+  const self = p?.sessions.find((s) => s.self);
+  const others = (p?.sessions ?? [])
+    .filter((s) => !s.self && p?.repo && s.repo === p.repo)
+    .sort((a, b) => Number(b.listening) - Number(a.listening));
+  const playable = !!p && !p.errors && !link.error;
+  const openIn = (s: SessionInfo) => (location.href = `${s.url}/play?src=${encodeURIComponent(link.src)}`);
+
+  return (
+    <div className="shared-card">
+      <div className="shared-kicker">Shared walkthrough</div>
+      {link.error ? (
+        <>
+          <div className="shared-title">Can't play this walkthrough</div>
+          <div className="shared-error">{link.error}</div>
+        </>
+      ) : !p ? (
+        <div className="shared-loading">
+          <span className="spinner" /> {connected ? "Loading the walkthrough…" : "Connecting to pair…"}
+        </div>
+      ) : (
+        <>
+          <div className="shared-title">{p.title}</div>
+          <div className="shared-meta">
+            {p.segments} parts
+            {p.repo && <> · {p.repo}</>}
+            {p.source?.branch && <> · branch {p.source.branch}</>}
+            {p.source?.commit && <> · commit {shortCommit(p.source.commit)}</>}
+          </div>
+          {p.origin && <div className="shared-meta">From {p.origin}</div>}
+          {p.wrongRepo ? (
+            <div className="shared-error">
+              This pair session is showing {rootName}{self?.repo ? ` (${self.repo})` : ""}, not {p.repo ?? "the repo this was written for"}.
+              {others.length === 0 && ` No pair session is open in ${p.repo ?? "that repo"}. Ask your agent anything in a checkout of it to start one, then click the link again.`}
+            </div>
+          ) : p.errors ? (
+            <div className="shared-error">
+              It doesn't match the code this session is showing ({rootName}):
+              <ul>{p.errors.map((e) => <li key={e}>{e}</li>)}</ul>
+            </div>
+          ) : (
+            <>
+              {p.stale && <div className="shared-warn">{p.stale}</div>}
+              {self && !self.listening && (
+                <div className="shared-note">
+                  Your {self.harness} agent isn't waiting on pair right now, so the walkthrough plays on its own. If you ask a question, tell the agent "check pair" in its chat to get an answer.
+                </div>
+              )}
+            </>
+          )}
+          {others.length > 0 && (
+            <div className="session-pick">
+              <div className="session-pick-label">{playable ? "Or play it in another session:" : "Play it in:"}</div>
+              {others.map((s) => (
+                <button key={s.pid} className="session-row" onClick={() => openIn(s)}>
+                  <span className={`session-dot ${s.listening ? "on" : ""}`} />
+                  <span className="session-main">
+                    <strong>{s.harness}</strong> · {s.root.replace(/^\/(Users|home)\/[^/]+/, "~")}
+                  </span>
+                  <span className="session-state">{s.listening ? "agent listening" : "agent idle"}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+      <div className="shared-actions">
+        {playable && (
+          <button onClick={onPlay} disabled={link.starting}>{link.starting ? "Starting…" : "▶ Play here"}</button>
+        )}
+        <button className="secondary" onClick={onClose}>{playable ? "Not now" : "Close"}</button>
+      </div>
     </div>
   );
 }

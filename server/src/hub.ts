@@ -4,9 +4,10 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
-import type { ClientMessage, ResolvedScript, ServerMessage, VisibleContext } from "../../shared/protocol.js";
+import type { ClientMessage, ResolvedScript, ServerMessage, SharedPreview, VisibleContext } from "../../shared/protocol.js";
 import type { Workspace } from "./files.js";
 import { Kokoro } from "./kokoro.js";
+import { SessionRegistry } from "./sessions.js";
 
 const WEB_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../web");
 const MIME: Record<string, string> = {
@@ -25,13 +26,24 @@ export type Outcome =
   | { status: "return"; context: VisibleContext }
   | { status: "ended" }
   | { status: "idle" }
-  | { status: "cancelled" };
+  | { status: "cancelled" }
+  /** The user opened a shared walkthrough from a link while the agent was waiting on us. */
+  | { status: "shared"; source: string };
+
+/** Loading shared walkthroughs for the /play link, supplied by the MCP server. */
+export interface SharedHandler {
+  preview(source: string): Promise<SharedPreview>;
+  /** Validates and returns the walkthrough, ready to play. Throws when it can't play here. */
+  resolve(source: string): Promise<ResolvedScript>;
+}
 
 interface Waiter {
   /** Script id this waiter is playing, or null when waiting for a free-form question. */
   scriptId: string | null;
   resolve: (o: Outcome) => void;
   onSegment?: (index: number) => void;
+  /** Pair is playing on its own (from a link); no agent is behind this wait. */
+  unattended?: boolean;
 }
 
 const log = (...args: unknown[]) => console.error("[pair]", ...args);
@@ -57,6 +69,10 @@ export class Hub {
   private kokoro = new Kokoro();
   private ended: { message: string | null } | null = null;
   private silenceTimer: NodeJS.Timeout | null = null;
+  shared: SharedHandler | null = null;
+  readonly sessions = new SessionRegistry();
+  /** Shown in the session picker, e.g. "Claude Code". */
+  harness = "Unknown agent";
 
   constructor(private ws: Workspace) {
     this.kokoro.onStatus = (status) => this.broadcast({ type: "kokoro", status });
@@ -79,6 +95,7 @@ export class Hub {
       if (ok) {
         this.url = `http://localhost:${port}`;
         log(`UI at ${this.url} (root: ${this.ws.root})`);
+        await this.sessions.start(this.url, this.ws.root, this.harness).catch((e) => log("session registry:", e));
         return;
       }
     }
@@ -132,7 +149,7 @@ export class Hub {
   }
 
   /** Plays a script; resolves when it finishes, the user interjects, or ends the session. */
-  play(script: ResolvedScript, startAt: number, signal?: AbortSignal, onSegment?: (i: number) => void): Promise<Outcome> {
+  play(script: ResolvedScript, startAt: number, signal?: AbortSignal, onSegment?: (i: number) => void, unattended = false): Promise<Outcome> {
     this.current = { script, index: startAt };
     if (!script.aside && !script.transition) this.main = this.current;
     this.awaitPrompt = null;
@@ -140,7 +157,38 @@ export class Hub {
     this.queued = null;
     this.broadcast({ type: "play", script, startAt, autoplay: true });
     this.broadcastMain();
-    return this.wait({ scriptId: script.id, resolve: () => {}, onSegment }, signal);
+    return this.wait({ scriptId: script.id, resolve: () => {}, onSegment, unattended }, signal);
+  }
+
+  /** An agent (or the play CLI) is blocked in a call to us, so whatever the user does reaches it now. */
+  agentListening() {
+    return !!this.waiter && !this.waiter.unattended;
+  }
+
+  /**
+   * Plays a walkthrough opened from a link. If the agent is waiting on us, it's handed
+   * the request so it owns playback (and answers questions). Otherwise we play it
+   * ourselves, and a question waits for the agent's next await_user.
+   */
+  async playShared(source: string): Promise<"agent" | "direct"> {
+    if (this.agentListening()) {
+      this.broadcast({ type: "stop" });
+      this.settle({ status: "shared", source });
+      this.expectAgent();
+      this.setStatus("Loading the shared walkthrough…");
+      return "agent";
+    }
+    const script = await this.shared!.resolve(source);
+    this.touch();
+    void this.play(script, 0, undefined, undefined, true).then((o) => {
+      if (o.status !== "interrupted") return;
+      // play() only settles: nobody is listening, so keep the question for the agent.
+      if (this.silenceTimer) clearTimeout(this.silenceTimer);
+      this.silenceTimer = null;
+      this.queued = { status: "question", question: o.question, context: o.context };
+      this.setStatus("Your question is saved. To get an answer, tell your agent you asked something in pair.");
+    });
+    return "direct";
   }
 
   mainScript() {
@@ -179,6 +227,7 @@ export class Hub {
     return new Promise<Outcome>((resolve) => {
       w.resolve = resolve;
       this.waiter = w;
+      this.sessions.update({ listening: this.agentListening() });
       signal?.addEventListener("abort", () => {
         if (this.waiter === w) {
           this.settle({ status: "cancelled" });
@@ -191,6 +240,7 @@ export class Hub {
   private settle(o: Outcome) {
     const w = this.waiter;
     this.waiter = null;
+    this.sessions.update({ listening: false });
     w?.resolve(o);
   }
 
@@ -282,6 +332,19 @@ export class Hub {
         return json({ error: (e as Error).message }, 503);
       }
     }
+    if (url.pathname.startsWith("/api/shared/") && req.method === "POST") {
+      if (!this.shared) return json({ error: "Shared walkthroughs aren't available." }, 503);
+      try {
+        const { src } = JSON.parse(await readBody(req));
+        if (url.pathname === "/api/shared/preview") {
+          const [preview, sessions] = await Promise.all([this.shared.preview(String(src)), this.sessions.list()]);
+          return json({ ...preview, sessions });
+        }
+        if (url.pathname === "/api/shared/play") return json({ via: await this.playShared(String(src)) });
+      } catch (e) {
+        return json({ error: (e as Error).message }, 400);
+      }
+    }
     if (url.pathname === "/api/list") {
       try {
         return json(await this.ws.list(url.searchParams.get("dir") ?? ""));
@@ -297,7 +360,8 @@ export class Hub {
       }
     }
 
-    const rel = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
+    // "/play?src=…" is a link from a PR comment; the UI reads the query and asks before playing.
+    const rel = url.pathname === "/" || url.pathname === "/play" ? "index.html" : url.pathname.slice(1);
     const file = path.resolve(WEB_DIR, rel);
     if (!file.startsWith(WEB_DIR) || !existsSync(file)) {
       if (!existsSync(path.join(WEB_DIR, "index.html"))) {

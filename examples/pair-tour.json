@@ -6,7 +6,7 @@
       "actions": [
         { "do": "open", "path": "server/src/index.ts" },
         { "do": "highlight", "at": "a", "match": "\"present_walkthrough\"," },
-        { "do": "highlight", "at": "b", "match": "const result = await resolveScript(ws, { title, segments }" }
+        { "do": "highlight", "at": "b", "match": "const result = await resolveScript(ws, script, aside_for" }
       ]
     },
     {

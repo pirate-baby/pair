@@ -29,6 +29,55 @@ export interface Script {
   segments: ScriptSegment[];
 }
 
+/**
+ * A walkthrough saved for sharing (e.g. as a gist): the authored script, not the
+ * resolved one, so it re-validates against the viewer's checkout when played.
+ */
+export interface SharedWalkthrough extends Script {
+  /** Format version. */
+  pair: 1;
+  /** The code it was written against. */
+  source?: { repo?: string; commit?: string; branch?: string };
+  /** ISO timestamp. */
+  created?: string;
+}
+
+/** What the UI shows before playing a walkthrough opened from a link (POST /api/shared/preview). */
+export interface SharedPreview {
+  title: string;
+  segments: number;
+  /** Where it was loaded from and who posted it. */
+  origin?: string;
+  source?: SharedWalkthrough["source"];
+  /** The checkout differs from the code it was written against. */
+  stale?: string | null;
+  /** Why it can't play here (wrong repo, anchors that don't exist in this checkout). */
+  errors?: string[];
+  /** "owner/name" of the GitHub repo it was written for, if known. */
+  repo: string | null;
+  /** It was written for a different repo than this session shows (another session may match). */
+  wrongRepo?: boolean;
+  /** Every running pair session, so the user can pick the one in the right repo. */
+  sessions: SessionInfo[];
+}
+
+/** A running pair server (one per agent session), from the shared registry. */
+export interface SessionInfo {
+  pid: number;
+  port: number;
+  url: string;
+  root: string;
+  /** "owner/name" of the repo's GitHub origin, if any. */
+  repo: string | null;
+  /** "Claude Code", "Codex", "opencode", … */
+  harness: string;
+  /** The agent is in a pair tool call right now, so a click reaches it immediately. */
+  listening: boolean;
+  startedAt: string;
+  /** The session serving this page. */
+  self?: boolean;
+}
+
 /** Actions after server-side validation: concrete paths and line ranges. */
 export type ResolvedAction =
   | { do: "open"; path: string; offset: number }

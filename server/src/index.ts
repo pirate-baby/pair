@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -9,6 +8,8 @@ import type { ResolvedScript, Script } from "../../shared/protocol.js";
 import { Workspace } from "./files.js";
 import { Hub, type Outcome } from "./hub.js";
 import { resolveScript, writtenStyle } from "./script.js";
+import { harnessName } from "./sessions.js";
+import { freshness, loadWalkthrough, prepareShared, publishGist, publishToPr, sharedHandler } from "./share.js";
 import { outline, supportsSymbols } from "./symbols.js";
 
 const argv = process.argv.slice(2);
@@ -110,10 +111,35 @@ function describeOutcome(o: Outcome, played?: ResolvedScript): string {
       return "No question arrived before the timeout. Call end_session with a short goodbye (or await_user again if you expect more).";
     case "cancelled":
       return "Playback was cancelled (superseded or the request was aborted).";
+    case "shared":
+      return `The user opened a shared walkthrough from a link in the UI: ${o.source}\nCall play_shared_walkthrough with that source now. Don't investigate or write your own.`;
   }
 }
 
 const text = (t: string, isError = false) => ({ content: [{ type: "text" as const, text: t }], isError });
+
+/** The authored form of the latest main walkthrough, kept so it can be shared. */
+let lastMain: Script | null = null;
+
+interface ToolExtra {
+  signal: AbortSignal;
+  _meta?: { progressToken?: string | number };
+  sendNotification: (n: { method: "notifications/progress"; params: { progressToken: string | number; progress: number; total: number } }) => Promise<void>;
+}
+
+/** Plays a validated script, reporting per-segment progress to the client, and describes the outcome. */
+async function playResolved(script: ResolvedScript, extra: ToolExtra): Promise<string> {
+  const token = extra._meta?.progressToken;
+  const total = script.segments.length;
+  const outcome = await hub.play(script, 0, extra.signal, (i) => {
+    if (token !== undefined) {
+      extra.sendNotification({ method: "notifications/progress", params: { progressToken: token, progress: i + 1, total } }).catch(() => {});
+    }
+  });
+  return describeOutcome(outcome, script);
+}
+
+const warningList = (warnings: string[]) => (warnings.length ? `\n\nWarnings:\n- ${warnings.join("\n- ")}` : "");
 
 const server = new McpServer({ name: "pair", version: "0.1.0" });
 
@@ -167,21 +193,84 @@ server.registerTool(
   },
   async ({ title, segments, aside_for }, extra) => {
     hub.touch();
-    const result = await resolveScript(ws, { title, segments } as Script, aside_for ? { question: aside_for } : undefined);
+    const script = { title, segments } as Script;
+    const result = await resolveScript(ws, script, aside_for ? { question: aside_for } : undefined);
     if (!result.script) return text(`Script not played. Fix these and call again:\n- ${result.errors.join("\n- ")}`, true);
     if (!(await hub.ensureOpen())) return text(`No browser connected. Ask the user to open ${hub.url}, then retry.`, true);
-
-    const token = extra._meta?.progressToken;
-    const total = result.script.segments.length;
-    const outcome = await hub.play(result.script, 0, extra.signal, (i) => {
-      if (token !== undefined) {
-        extra.sendNotification({ method: "notifications/progress", params: { progressToken: token, progress: i + 1, total } }).catch(() => {});
-      }
-    });
-    const warn = result.warnings.length ? `\n\nWarnings:\n- ${result.warnings.join("\n- ")}` : "";
-    return text(describeOutcome(outcome, result.script) + warn);
+    if (!aside_for) lastMain = script;
+    return text((await playResolved(result.script, extra)) + warningList(result.warnings));
   },
 );
+
+server.registerTool(
+  "share_walkthrough",
+  {
+    description: [
+      "Publish the most recent main walkthrough (not asides) so teammates with pair can replay it without regenerating it.",
+      "Only call this when the user asks to share or publish a walkthrough. Uses the gh CLI.",
+      "By default it's posted as a comment on the pull request (visible to anyone who can see the repo); reviewers then just ask to play the walkthrough on that PR.",
+      "With to: \"gist\" it's a secret gist instead: unlisted, but readable by anyone with the link, including code snippets used as anchors.",
+    ].join(" "),
+    inputSchema: {
+      to: z.enum(["pr", "gist"]).optional().describe('Default "pr".'),
+      pr: z.string().optional().describe("PR number or URL. Defaults to the PR for the current branch."),
+    },
+  },
+  async ({ to, pr }) => {
+    hub.touch();
+    if (!lastMain) return text("There's no walkthrough to share yet. Present one with present_walkthrough first.", true);
+    try {
+      if (to === "gist") {
+        const { url, warnings } = await publishGist(ws.root, lastMain);
+        return text(`Published "${lastMain.title}" as a secret gist: ${url}` + warningList(warnings));
+      }
+      const { url, warnings } = await publishToPr(ws.root, lastMain, pr);
+      return text(`Posted "${lastMain.title}" on the PR: ${url}\nReviewers can ask their agent to play the walkthrough on that PR.` + warningList(warnings));
+    } catch (e) {
+      return text((e as Error).message, true);
+    }
+  },
+);
+
+server.registerTool(
+  "play_shared_walkthrough",
+  {
+    description: [
+      "Play a walkthrough someone already shared (a PR number or URL, a gist URL or id, a raw URL, or a local .json file) exactly as written, instead of investigating and writing a new one.",
+      "It's re-validated against this checkout. Blocks and returns outcomes like present_walkthrough, and questions are handled the same way (answer with asides).",
+    ].join(" "),
+    inputSchema: {
+      source: z.string().describe('e.g. "123" or a PR URL (plays the latest walkthrough posted on it), a gist URL, or a path to a walkthrough .json file.'),
+    },
+  },
+  async ({ source }, extra) => {
+    hub.touch();
+    let prepared;
+    try {
+      prepared = await prepareShared(ws, source);
+    } catch (e) {
+      return text((e as Error).message, true);
+    }
+    const { shared, stale, result } = prepared;
+    if (!result.script) {
+      return text(
+        [
+          "The shared walkthrough can't play here, so nothing played:",
+          `- ${result.errors.join("\n- ")}`,
+          stale ? `\n${stale}` : "",
+          "\nTell the user what's wrong (usually: check out the branch or commit it was written against). Don't write a replacement walkthrough unless they ask.",
+        ].join("\n"),
+        true,
+      );
+    }
+    if (!(await hub.ensureOpen())) return text(`No browser connected. Ask the user to open ${hub.url}, then retry.`, true);
+    lastMain = { title: shared.title, segments: shared.segments };
+    const note = (shared.origin ? `\n\nLoaded from ${shared.origin}.` : "") + (stale ? `\n\nHeads-up for the user: ${stale}` : "");
+    return text((await playResolved(result.script, extra)) + note + warningList(result.warnings));
+  },
+);
+
+hub.shared = sharedHandler(ws, (s) => (lastMain = s));
 
 server.registerTool(
   "resume_walkthrough",
@@ -262,11 +351,14 @@ server.registerTool(
   },
 );
 
-/** `pair play script.json [--root dir]`: run a hand-written script without an agent. */
-async function playFile(file: string) {
+/** `pair play <script.json | PR | gist URL> [--root dir]`: run a script without an agent. */
+async function playFile(source: string) {
+  hub.harness = "pair play (no agent)";
   await hub.listen(port);
-  const script = JSON.parse(await readFile(file, "utf8")) as Script;
-  const result = await resolveScript(ws, script);
+  const shared = await loadWalkthrough(source, ws.root, process.cwd());
+  const stale = await freshness(ws.root, shared);
+  if (stale) console.error("note:", stale);
+  const result = await resolveScript(ws, { title: shared.title, segments: shared.segments });
   result.warnings.forEach((w) => console.error("warning:", w));
   if (!result.script) {
     result.errors.forEach((e) => console.error("error:", e));
@@ -274,10 +366,23 @@ async function playFile(file: string) {
   }
   console.error(`Opening ${hub.url} …`);
   await hub.ensureOpen();
-  let outcome = await hub.play(result.script, 0);
-  while (outcome.status === "interrupted") {
-    console.error(`User asked at segment ${outcome.index}: ${outcome.question}\n(no agent in play mode; resuming)`);
-    outcome = await hub.play(result.script, outcome.index);
+  let script = result.script;
+  let outcome = await hub.play(script, 0);
+  for (;;) {
+    if (outcome.status === "interrupted") {
+      console.error(`User asked at segment ${outcome.index}: ${outcome.question}\n(no agent in play mode; resuming)`);
+      outcome = await hub.play(script, outcome.index);
+    } else if (outcome.status === "shared") {
+      // A "Play in pair" link was opened: switch to that walkthrough.
+      console.error(`Playing shared walkthrough from ${outcome.source}`);
+      try {
+        script = await hub.shared!.resolve(outcome.source);
+      } catch (e) {
+        console.error("error:", (e as Error).message);
+        break;
+      }
+      outcome = await hub.play(script, 0);
+    } else break;
   }
   console.error(`Outcome: ${outcome.status}`);
   process.exit(0);
@@ -285,21 +390,30 @@ async function playFile(file: string) {
 
 async function main() {
   if (argv[0] === "play") {
-    if (!argv[1]) throw new Error("usage: pair play <script.json> [--root dir]");
+    if (!argv[1]) throw new Error("usage: pair play <script.json | PR number or URL | gist URL> [--root dir]");
     return playFile(argv[1]);
   }
   await hub.listen(port);
   server.server.oninitialized = async () => {
+    hub.harness = harnessName(server.server.getClientVersion()?.name);
+    hub.sessions.update({ harness: hub.harness });
     // Without an explicit root, prefer the client's workspace root over our cwd.
     if (explicitRoot || !server.server.getClientCapabilities()?.roots) return;
     try {
       const { roots } = await server.server.listRoots();
       const first = roots.find((r) => r.uri.startsWith("file://"));
-      if (first) ws.setRoot(fileURLToPath(first.uri));
+      if (first) {
+        ws.setRoot(fileURLToPath(first.uri));
+        await hub.sessions.setRoot(ws.root);
+      }
     } catch {
       /* keep cwd */
     }
   };
+  // The agent is gone: stop serving, so the UI port and session list don't point at a dead session.
+  // The stdio transport doesn't report stdin closing, so watch it directly.
+  server.server.onclose = () => process.exit(0);
+  process.stdin.once("end", () => process.exit(0));
   await server.connect(new StdioServerTransport());
 }
 
