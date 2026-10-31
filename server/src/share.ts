@@ -7,6 +7,7 @@ import type { Script, SharedWalkthrough } from "../../shared/protocol.js";
 import type { Workspace } from "./files.js";
 import type { SharedHandler } from "./hub.js";
 import { parseNarration, resolveScript } from "./script.js";
+import { repoSlug } from "./sessions.js";
 
 const exec = promisify(execFile);
 const FILE_SUFFIX = ".pair.json";
@@ -334,12 +335,6 @@ export function isLinkSource(source: string): boolean {
   return !!(commentRef(source) || /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/.test(source) || (/^https:\/\//.test(source) && gistId(source)));
 }
 
-/** "owner/name" from a GitHub remote URL (ssh or https), lowercased. */
-function repoSlug(remote: string | undefined | null): string | null {
-  const m = remote?.match(/github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?\/?$/i);
-  return m ? m[1].toLowerCase() : null;
-}
-
 /** An error when the walkthrough was written for a different GitHub repo than the one pair is showing. */
 export async function repoMismatch(root: string, shared: SharedWalkthrough): Promise<string | null> {
   const theirs = repoSlug(shared.source?.repo);
@@ -356,8 +351,8 @@ export async function prepareShared(ws: Workspace, source: string) {
     repoMismatch(ws.root, shared),
     resolveScript(ws, { title: shared.title, segments: shared.segments }),
   ]);
-  if (wrongRepo) return { shared, stale: null, result: { errors: [wrongRepo], warnings: [] } as typeof result };
-  return { shared, stale, result };
+  if (wrongRepo) return { shared, stale: null, wrongRepo: true, result: { errors: [wrongRepo], warnings: [] } as typeof result };
+  return { shared, stale, wrongRepo: false, result };
 }
 
 /** Links only name GitHub PRs, PR comments, and gists: never local files or arbitrary URLs. */
@@ -370,9 +365,10 @@ function linkSource(source: string): string {
 export function sharedHandler(ws: Workspace, onPlay: (script: Script) => void): SharedHandler {
   return {
     async preview(source) {
-      const { shared, stale, result } = await prepareShared(ws, linkSource(source));
+      const { shared, stale, wrongRepo, result } = await prepareShared(ws, linkSource(source));
       const errors = result.script ? undefined : result.errors;
-      return { title: shared.title, segments: shared.segments.length, origin: shared.origin, source: shared.source, stale, errors };
+      const repo = repoSlug(shared.source?.repo);
+      return { title: shared.title, segments: shared.segments.length, origin: shared.origin, source: shared.source, stale, errors, repo, wrongRepo, sessions: [] };
     },
     async resolve(source) {
       const { shared, result } = await prepareShared(ws, linkSource(source));

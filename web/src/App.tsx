@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ClientMessage, KokoroStatus, ResolvedScript, ServerMessage, SharedPreview } from "../../shared/protocol";
+import type { ClientMessage, KokoroStatus, ResolvedScript, ServerMessage, SessionInfo, SharedPreview } from "../../shared/protocol";
 import { Player, type PlayerState } from "./player";
 import { KOKORO_VOICES, Speaker, type Engine } from "./speech";
 import { Stage, type TabsState } from "./stage";
@@ -450,43 +450,7 @@ export function App() {
 
       {shared && (
         <div className="gesture">
-          <div className="shared-card">
-            <div className="shared-kicker">Shared walkthrough</div>
-            {shared.error ? (
-              <>
-                <div className="shared-title">Can't play this walkthrough</div>
-                <div className="shared-error">{shared.error}</div>
-              </>
-            ) : !shared.preview ? (
-              <div className="shared-loading">
-                <span className="spinner" /> {connected ? "Loading the walkthrough…" : "Connecting to pair…"}
-              </div>
-            ) : (
-              <>
-                <div className="shared-title">{shared.preview.title}</div>
-                <div className="shared-meta">
-                  {shared.preview.segments} parts
-                  {shared.preview.source?.branch && <> · branch {shared.preview.source.branch}</>}
-                  {shared.preview.source?.commit && <> · commit {shortCommit(shared.preview.source.commit)}</>}
-                </div>
-                {shared.preview.origin && <div className="shared-meta">From {shared.preview.origin}</div>}
-                {shared.preview.errors ? (
-                  <div className="shared-error">
-                    It doesn't match the code pair is showing ({rootName}):
-                    <ul>{shared.preview.errors.map((e) => <li key={e}>{e}</li>)}</ul>
-                  </div>
-                ) : (
-                  shared.preview.stale && <div className="shared-warn">{shared.preview.stale}</div>
-                )}
-              </>
-            )}
-            <div className="shared-actions">
-              {shared.preview && !shared.preview.errors && !shared.error && (
-                <button onClick={playShared} disabled={shared.starting}>{shared.starting ? "Starting…" : "▶ Play walkthrough"}</button>
-              )}
-              <button className="secondary" onClick={closeShared}>{shared.preview && !shared.preview.errors && !shared.error ? "Not now" : "Close"}</button>
-            </div>
-          </div>
+          <SharedCard link={shared} rootName={rootName} connected={connected} onPlay={playShared} onClose={closeShared} />
         </div>
       )}
 
@@ -496,6 +460,84 @@ export function App() {
           <div>Your browser needs one click before it can speak.</div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** The confirmation card for a "Play in pair" link, including a picker for other running sessions. */
+function SharedCard({ link, rootName, connected, onPlay, onClose }: { link: SharedLink; rootName: string; connected: boolean; onPlay: () => void; onClose: () => void }) {
+  const p = link.preview;
+  const self = p?.sessions.find((s) => s.self);
+  const others = (p?.sessions ?? [])
+    .filter((s) => !s.self && p?.repo && s.repo === p.repo)
+    .sort((a, b) => Number(b.listening) - Number(a.listening));
+  const playable = !!p && !p.errors && !link.error;
+  const openIn = (s: SessionInfo) => (location.href = `${s.url}/play?src=${encodeURIComponent(link.src)}`);
+
+  return (
+    <div className="shared-card">
+      <div className="shared-kicker">Shared walkthrough</div>
+      {link.error ? (
+        <>
+          <div className="shared-title">Can't play this walkthrough</div>
+          <div className="shared-error">{link.error}</div>
+        </>
+      ) : !p ? (
+        <div className="shared-loading">
+          <span className="spinner" /> {connected ? "Loading the walkthrough…" : "Connecting to pair…"}
+        </div>
+      ) : (
+        <>
+          <div className="shared-title">{p.title}</div>
+          <div className="shared-meta">
+            {p.segments} parts
+            {p.repo && <> · {p.repo}</>}
+            {p.source?.branch && <> · branch {p.source.branch}</>}
+            {p.source?.commit && <> · commit {shortCommit(p.source.commit)}</>}
+          </div>
+          {p.origin && <div className="shared-meta">From {p.origin}</div>}
+          {p.wrongRepo ? (
+            <div className="shared-error">
+              This pair session is showing {rootName}{self?.repo ? ` (${self.repo})` : ""}, not {p.repo ?? "the repo this was written for"}.
+              {others.length === 0 && ` No pair session is open in ${p.repo ?? "that repo"}. Ask your agent anything in a checkout of it to start one, then click the link again.`}
+            </div>
+          ) : p.errors ? (
+            <div className="shared-error">
+              It doesn't match the code this session is showing ({rootName}):
+              <ul>{p.errors.map((e) => <li key={e}>{e}</li>)}</ul>
+            </div>
+          ) : (
+            <>
+              {p.stale && <div className="shared-warn">{p.stale}</div>}
+              {self && !self.listening && (
+                <div className="shared-note">
+                  Your {self.harness} agent isn't waiting on pair right now, so the walkthrough plays on its own. If you ask a question, tell the agent "check pair" in its chat to get an answer.
+                </div>
+              )}
+            </>
+          )}
+          {others.length > 0 && (
+            <div className="session-pick">
+              <div className="session-pick-label">{playable ? "Or play it in another session:" : "Play it in:"}</div>
+              {others.map((s) => (
+                <button key={s.pid} className="session-row" onClick={() => openIn(s)}>
+                  <span className={`session-dot ${s.listening ? "on" : ""}`} />
+                  <span className="session-main">
+                    <strong>{s.harness}</strong> · {s.root.replace(/^\/(Users|home)\/[^/]+/, "~")}
+                  </span>
+                  <span className="session-state">{s.listening ? "agent listening" : "agent idle"}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+      <div className="shared-actions">
+        {playable && (
+          <button onClick={onPlay} disabled={link.starting}>{link.starting ? "Starting…" : "▶ Play here"}</button>
+        )}
+        <button className="secondary" onClick={onClose}>{playable ? "Not now" : "Close"}</button>
+      </div>
     </div>
   );
 }

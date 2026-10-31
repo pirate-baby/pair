@@ -8,6 +8,7 @@ import type { ResolvedScript, Script } from "../../shared/protocol.js";
 import { Workspace } from "./files.js";
 import { Hub, type Outcome } from "./hub.js";
 import { resolveScript, writtenStyle } from "./script.js";
+import { harnessName } from "./sessions.js";
 import { freshness, loadWalkthrough, prepareShared, publishGist, publishToPr, sharedHandler } from "./share.js";
 import { outline, supportsSymbols } from "./symbols.js";
 
@@ -352,6 +353,7 @@ server.registerTool(
 
 /** `pair play <script.json | PR | gist URL> [--root dir]`: run a script without an agent. */
 async function playFile(source: string) {
+  hub.harness = "pair play (no agent)";
   await hub.listen(port);
   const shared = await loadWalkthrough(source, ws.root, process.cwd());
   const stale = await freshness(ws.root, shared);
@@ -393,16 +395,25 @@ async function main() {
   }
   await hub.listen(port);
   server.server.oninitialized = async () => {
+    hub.harness = harnessName(server.server.getClientVersion()?.name);
+    hub.sessions.update({ harness: hub.harness });
     // Without an explicit root, prefer the client's workspace root over our cwd.
     if (explicitRoot || !server.server.getClientCapabilities()?.roots) return;
     try {
       const { roots } = await server.server.listRoots();
       const first = roots.find((r) => r.uri.startsWith("file://"));
-      if (first) ws.setRoot(fileURLToPath(first.uri));
+      if (first) {
+        ws.setRoot(fileURLToPath(first.uri));
+        await hub.sessions.setRoot(ws.root);
+      }
     } catch {
       /* keep cwd */
     }
   };
+  // The agent is gone: stop serving, so the UI port and session list don't point at a dead session.
+  // The stdio transport doesn't report stdin closing, so watch it directly.
+  server.server.onclose = () => process.exit(0);
+  process.stdin.once("end", () => process.exit(0));
   await server.connect(new StdioServerTransport());
 }
 

@@ -53,6 +53,29 @@ export interface SharedPreview {
   stale?: string | null;
   /** Why it can't play here (wrong repo, anchors that don't exist in this checkout). */
   errors?: string[];
+  /** "owner/name" of the GitHub repo it was written for, if known. */
+  repo: string | null;
+  /** It was written for a different repo than this session shows (another session may match). */
+  wrongRepo?: boolean;
+  /** Every running pair session, so the user can pick the one in the right repo. */
+  sessions: SessionInfo[];
+}
+
+/** A running pair server (one per agent session), from the shared registry. */
+export interface SessionInfo {
+  pid: number;
+  port: number;
+  url: string;
+  root: string;
+  /** "owner/name" of the repo's GitHub origin, if any. */
+  repo: string | null;
+  /** "Claude Code", "Codex", "opencode", … */
+  harness: string;
+  /** The agent is in a pair tool call right now, so a click reaches it immediately. */
+  listening: boolean;
+  startedAt: string;
+  /** The session serving this page. */
+  self?: boolean;
 }
 
 /** Actions after server-side validation: concrete paths and line ranges. */
