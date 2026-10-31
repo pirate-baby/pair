@@ -8,7 +8,7 @@ import type { ResolvedScript, Script } from "../../shared/protocol.js";
 import { Workspace } from "./files.js";
 import { Hub, type Outcome } from "./hub.js";
 import { resolveScript, writtenStyle } from "./script.js";
-import { freshness, loadWalkthrough, publishGist, publishToPr } from "./share.js";
+import { freshness, loadWalkthrough, prepareShared, publishGist, publishToPr, sharedHandler } from "./share.js";
 import { outline, supportsSymbols } from "./symbols.js";
 
 const argv = process.argv.slice(2);
@@ -110,6 +110,8 @@ function describeOutcome(o: Outcome, played?: ResolvedScript): string {
       return "No question arrived before the timeout. Call end_session with a short goodbye (or await_user again if you expect more).";
     case "cancelled":
       return "Playback was cancelled (superseded or the request was aborted).";
+    case "shared":
+      return `The user opened a shared walkthrough from a link in the UI: ${o.source}\nCall play_shared_walkthrough with that source now. Don't investigate or write your own.`;
   }
 }
 
@@ -242,18 +244,17 @@ server.registerTool(
   },
   async ({ source }, extra) => {
     hub.touch();
-    let shared;
+    let prepared;
     try {
-      shared = await loadWalkthrough(source, ws.root);
+      prepared = await prepareShared(ws, source);
     } catch (e) {
       return text((e as Error).message, true);
     }
-    const stale = await freshness(ws.root, shared);
-    const result = await resolveScript(ws, { title: shared.title, segments: shared.segments });
+    const { shared, stale, result } = prepared;
     if (!result.script) {
       return text(
         [
-          "The shared walkthrough doesn't match this checkout, so nothing played:",
+          "The shared walkthrough can't play here, so nothing played:",
           `- ${result.errors.join("\n- ")}`,
           stale ? `\n${stale}` : "",
           "\nTell the user what's wrong (usually: check out the branch or commit it was written against). Don't write a replacement walkthrough unless they ask.",
@@ -267,6 +268,8 @@ server.registerTool(
     return text((await playResolved(result.script, extra)) + note + warningList(result.warnings));
   },
 );
+
+hub.shared = sharedHandler(ws, (s) => (lastMain = s));
 
 server.registerTool(
   "resume_walkthrough",
@@ -361,10 +364,23 @@ async function playFile(source: string) {
   }
   console.error(`Opening ${hub.url} …`);
   await hub.ensureOpen();
-  let outcome = await hub.play(result.script, 0);
-  while (outcome.status === "interrupted") {
-    console.error(`User asked at segment ${outcome.index}: ${outcome.question}\n(no agent in play mode; resuming)`);
-    outcome = await hub.play(result.script, outcome.index);
+  let script = result.script;
+  let outcome = await hub.play(script, 0);
+  for (;;) {
+    if (outcome.status === "interrupted") {
+      console.error(`User asked at segment ${outcome.index}: ${outcome.question}\n(no agent in play mode; resuming)`);
+      outcome = await hub.play(script, outcome.index);
+    } else if (outcome.status === "shared") {
+      // A "Play in pair" link was opened: switch to that walkthrough.
+      console.error(`Playing shared walkthrough from ${outcome.source}`);
+      try {
+        script = await hub.shared!.resolve(outcome.source);
+      } catch (e) {
+        console.error("error:", (e as Error).message);
+        break;
+      }
+      outcome = await hub.play(script, 0);
+    } else break;
   }
   console.error(`Outcome: ${outcome.status}`);
   process.exit(0);

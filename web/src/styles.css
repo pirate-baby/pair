@@ -227,6 +227,30 @@ button.link { background: none; padding: 0; color: var(--accent); text-decoratio
 }
 .gesture button { font-size: 16px; padding: 10px 22px; }
 
+.shared-card {
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
+  overflow: auto;
+  padding: 20px 22px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text, #ddd);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.shared-kicker { color: var(--accent); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+.shared-title { font-size: 18px; font-weight: 600; color: #fff; }
+.shared-meta { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.shared-loading { color: var(--muted); display: flex; align-items: center; gap: 8px; }
+.shared-warn, .shared-error { font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; padding: 8px 10px; border-radius: 6px; }
+.shared-warn { background: rgba(230, 180, 60, 0.12); color: #e6c46a; }
+.shared-error { background: rgba(240, 90, 90, 0.12); color: #f08a8a; }
+.shared-error ul { margin: 6px 0 0; padding-left: 18px; }
+.shared-actions { display: flex; gap: 8px; margin-top: 6px; }
+.shared-card .shared-actions button { font-size: 14px; padding: 8px 16px; }
+
 @media (max-width: 1000px) {
   .app { grid-template-columns: 200px minmax(0, 1fr) 300px; }
 }

@@ -42,6 +42,19 @@ export interface SharedWalkthrough extends Script {
   created?: string;
 }
 
+/** What the UI shows before playing a walkthrough opened from a link (POST /api/shared/preview). */
+export interface SharedPreview {
+  title: string;
+  segments: number;
+  /** Where it was loaded from and who posted it. */
+  origin?: string;
+  source?: SharedWalkthrough["source"];
+  /** The checkout differs from the code it was written against. */
+  stale?: string | null;
+  /** Why it can't play here (wrong repo, anchors that don't exist in this checkout). */
+  errors?: string[];
+}
+
 /** Actions after server-side validation: concrete paths and line ranges. */
 export type ResolvedAction =
   | { do: "open"; path: string; offset: number }

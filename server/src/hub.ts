@@ -4,7 +4,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
-import type { ClientMessage, ResolvedScript, ServerMessage, VisibleContext } from "../../shared/protocol.js";
+import type { ClientMessage, ResolvedScript, ServerMessage, SharedPreview, VisibleContext } from "../../shared/protocol.js";
 import type { Workspace } from "./files.js";
 import { Kokoro } from "./kokoro.js";
 
@@ -25,7 +25,16 @@ export type Outcome =
   | { status: "return"; context: VisibleContext }
   | { status: "ended" }
   | { status: "idle" }
-  | { status: "cancelled" };
+  | { status: "cancelled" }
+  /** The user opened a shared walkthrough from a link while the agent was waiting on us. */
+  | { status: "shared"; source: string };
+
+/** Loading shared walkthroughs for the /play link, supplied by the MCP server. */
+export interface SharedHandler {
+  preview(source: string): Promise<SharedPreview>;
+  /** Validates and returns the walkthrough, ready to play. Throws when it can't play here. */
+  resolve(source: string): Promise<ResolvedScript>;
+}
 
 interface Waiter {
   /** Script id this waiter is playing, or null when waiting for a free-form question. */
@@ -57,6 +66,7 @@ export class Hub {
   private kokoro = new Kokoro();
   private ended: { message: string | null } | null = null;
   private silenceTimer: NodeJS.Timeout | null = null;
+  shared: SharedHandler | null = null;
 
   constructor(private ws: Workspace) {
     this.kokoro.onStatus = (status) => this.broadcast({ type: "kokoro", status });
@@ -141,6 +151,32 @@ export class Hub {
     this.broadcast({ type: "play", script, startAt, autoplay: true });
     this.broadcastMain();
     return this.wait({ scriptId: script.id, resolve: () => {}, onSegment }, signal);
+  }
+
+  /**
+   * Plays a walkthrough opened from a link. If the agent is waiting on us, it's handed
+   * the request so it owns playback (and answers questions). Otherwise we play it
+   * ourselves, and a question waits for the agent's next await_user.
+   */
+  async playShared(source: string): Promise<"agent" | "direct"> {
+    if (this.waiter) {
+      this.broadcast({ type: "stop" });
+      this.settle({ status: "shared", source });
+      this.expectAgent();
+      this.setStatus("Loading the shared walkthrough…");
+      return "agent";
+    }
+    const script = await this.shared!.resolve(source);
+    this.touch();
+    void this.play(script, 0).then((o) => {
+      if (o.status !== "interrupted") return;
+      // play() only settles: nobody is listening, so keep the question for the agent.
+      if (this.silenceTimer) clearTimeout(this.silenceTimer);
+      this.silenceTimer = null;
+      this.queued = { status: "question", question: o.question, context: o.context };
+      this.setStatus("Your question is saved. To get an answer, tell your agent you asked something in pair.");
+    });
+    return "direct";
   }
 
   mainScript() {
@@ -282,6 +318,16 @@ export class Hub {
         return json({ error: (e as Error).message }, 503);
       }
     }
+    if (url.pathname.startsWith("/api/shared/") && req.method === "POST") {
+      if (!this.shared) return json({ error: "Shared walkthroughs aren't available." }, 503);
+      try {
+        const { src } = JSON.parse(await readBody(req));
+        if (url.pathname === "/api/shared/preview") return json(await this.shared.preview(String(src)));
+        if (url.pathname === "/api/shared/play") return json({ via: await this.playShared(String(src)) });
+      } catch (e) {
+        return json({ error: (e as Error).message }, 400);
+      }
+    }
     if (url.pathname === "/api/list") {
       try {
         return json(await this.ws.list(url.searchParams.get("dir") ?? ""));
@@ -297,7 +343,8 @@ export class Hub {
       }
     }
 
-    const rel = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
+    // "/play?src=…" is a link from a PR comment; the UI reads the query and asks before playing.
+    const rel = url.pathname === "/" || url.pathname === "/play" ? "index.html" : url.pathname.slice(1);
     const file = path.resolve(WEB_DIR, rel);
     if (!file.startsWith(WEB_DIR) || !existsSync(file)) {
       if (!existsSync(path.join(WEB_DIR, "index.html"))) {

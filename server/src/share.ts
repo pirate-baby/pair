@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { Script, SharedWalkthrough } from "../../shared/protocol.js";
-import { parseNarration } from "./script.js";
+import type { Workspace } from "./files.js";
+import type { SharedHandler } from "./hub.js";
+import { parseNarration, resolveScript } from "./script.js";
 
 const exec = promisify(execFile);
 const FILE_SUFFIX = ".pair.json";
@@ -82,15 +84,26 @@ function fenceFor(content: string): string {
   return "`".repeat(longest + 1);
 }
 
-function prComment(shared: SharedWalkthrough): string {
+/** Port the play link points at: pair's default, since we can't know the viewer's. */
+const LINK_PORT = 7420;
+
+/** A link that opens this walkthrough in a running pair session's UI. */
+export function playLink(source: string): string {
+  return `http://localhost:${LINK_PORT}/play?src=${encodeURIComponent(source)}`;
+}
+
+function prComment(shared: SharedWalkthrough, commentUrl?: string): string {
   const json = JSON.stringify(shared, null, 2);
   const fence = fenceFor(json);
   const where = WHERE(shared, false);
+  const how = commentUrl
+    ? `**[▶ Play in pair](${playLink(commentUrl)})** while a pair session is open, or ask your agent to "play the pair walkthrough on this PR".`
+    : `Ask your agent to "play the pair walkthrough on this PR" to watch it.`;
   return [
     PR_MARKER,
     `### ▶️ Pair walkthrough: ${shared.title}`,
     "",
-    `Ask your agent to "play the pair walkthrough on this PR" to watch it in [pair](https://github.com/pirate-baby/pair).${where ? ` Written against ${where}.` : ""}`,
+    `${how} ([What's pair?](https://github.com/pirate-baby/pair))${where ? ` Written against ${where}.` : ""}`,
     "",
     "<details><summary>Transcript</summary>",
     "",
@@ -145,7 +158,18 @@ export async function publishToPr(root: string, script: Script, pr?: string): Pr
     const file = path.join(dir, "comment.md");
     await writeFile(file, body);
     const out = await gh(["pr", "comment", ...(pr ? [pr] : []), "--body-file", file], root, "gh pr comment");
-    return { url: out.split("\n").pop()!, warnings };
+    const url = out.split("\n").pop()!;
+    // The play link names this exact comment, so it can only be added once the comment exists.
+    const ref = commentRef(url);
+    if (ref) {
+      await writeFile(file, prComment(shared, url));
+      try {
+        await gh(["api", "-X", "PATCH", `repos/${ref.repo}/issues/comments/${ref.id}`, "-F", `body=@${file}`], root, "Adding the play link");
+      } catch (e) {
+        warnings.push(`${(e as Error).message}. The comment was posted without a "Play in pair" link.`);
+      }
+    }
+    return { url, warnings };
   });
 }
 
@@ -168,6 +192,30 @@ function prRef(source: string): string | null {
   return source.match(/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+/)?.[0] ?? null;
 }
 
+/** A specific PR comment (…/pull/1#issuecomment-123), or null. */
+function commentRef(source: string): { repo: string; id: string } | null {
+  const m = source.match(/^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/\d+#issuecomment-(\d+)$/);
+  return m ? { repo: m[1], id: m[2] } : null;
+}
+
+/** The walkthrough JSON in a comment or description, if it has one. */
+function walkthroughIn(body: string | undefined): string | null {
+  const at = body?.indexOf(PR_MARKER) ?? -1;
+  if (at === -1) return null;
+  return body!.slice(at).match(/(`{3,})json\r?\n([\s\S]*?)\r?\n\1/)?.[2] ?? null;
+}
+
+async function fromComment(ref: { repo: string; id: string }, root: string): Promise<{ raw: string; origin: string }> {
+  const c = JSON.parse(await gh(["api", `repos/${ref.repo}/issues/comments/${ref.id}`], root, "Fetching the PR comment")) as {
+    body: string;
+    html_url: string;
+    user?: { login: string };
+  };
+  const raw = walkthroughIn(c.body);
+  if (!raw) throw new Error(`${c.html_url} isn't a pair walkthrough comment.`);
+  return { raw, origin: `${c.html_url}${c.user ? ` (posted by ${c.user.login})` : ""}` };
+}
+
 interface PrView {
   number: number;
   body: string;
@@ -180,11 +228,8 @@ async function fromPr(ref: string, root: string): Promise<{ raw: string; origin:
   const pr = JSON.parse(await gh(["pr", "view", ref, "--json", "number,body,author,comments"], root, "gh pr view")) as PrView;
   const posts = [{ body: pr.body, author: pr.author, url: `the description of PR #${pr.number}` }, ...pr.comments.map((c) => ({ ...c, url: c.url }))];
   for (const post of posts.reverse()) {
-    const at = post.body?.indexOf(PR_MARKER) ?? -1;
-    if (at === -1) continue;
-    const m = post.body.slice(at).match(/(`{3,})json\r?\n([\s\S]*?)\r?\n\1/);
-    if (!m) continue;
-    return { raw: m[2], origin: `${post.url}${post.author ? ` (posted by ${post.author.login})` : ""}` };
+    const raw = walkthroughIn(post.body);
+    if (raw) return { raw, origin: `${post.url}${post.author ? ` (posted by ${post.author.login})` : ""}` };
   }
   throw new Error(`PR #${pr.number} has no pair walkthrough comment.`);
 }
@@ -231,16 +276,20 @@ async function fetchText(url: string): Promise<string> {
 }
 
 /**
- * Loads a shared walkthrough from a PR (number or URL), a gist URL/id, a raw URL, or a local file.
+ * Loads a shared walkthrough from a PR comment URL, a PR (number or URL; its latest walkthrough),
+ * a gist URL/id, a raw URL, or a local file.
  * PR numbers are looked up in the repo at `root`; file paths are relative to `cwd`.
  */
 export async function loadWalkthrough(source: string, root: string, cwd = root): Promise<SharedWalkthrough & { origin?: string }> {
   source = source.trim();
   let raw: string;
   let origin: string | undefined;
+  const comment = commentRef(source);
   const pr = prRef(source);
   const id = gistId(source);
-  if (pr) {
+  if (comment) {
+    ({ raw, origin } = await fromComment(comment, root));
+  } else if (pr) {
     ({ raw, origin } = await fromPr(pr, root));
   } else if (id) {
     const files = await fetchGist(id);
@@ -278,4 +327,58 @@ export async function freshness(root: string, shared: SharedWalkthrough): Promis
   return changed
     ? `It was written against commit ${short}${branch ? ` on ${branch}` : ""}; these files have changed since then, so some narration may be out of date:\n${changed}`
     : null;
+}
+
+/** Sources a play link may name: GitHub PR comments, PRs, and gists, never local files or arbitrary URLs. */
+export function isLinkSource(source: string): boolean {
+  return !!(commentRef(source) || /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/.test(source) || (/^https:\/\//.test(source) && gistId(source)));
+}
+
+/** "owner/name" from a GitHub remote URL (ssh or https), lowercased. */
+function repoSlug(remote: string | undefined | null): string | null {
+  const m = remote?.match(/github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?\/?$/i);
+  return m ? m[1].toLowerCase() : null;
+}
+
+/** An error when the walkthrough was written for a different GitHub repo than the one pair is showing. */
+export async function repoMismatch(root: string, shared: SharedWalkthrough): Promise<string | null> {
+  const theirs = repoSlug(shared.source?.repo);
+  const ours = repoSlug(await tryGit(root, "remote", "get-url", "origin"));
+  if (!theirs || !ours || theirs === ours) return null;
+  return `This walkthrough is for ${theirs}, but pair is showing ${ours} (${root}). Open it from a pair session in a checkout of ${theirs}.`;
+}
+
+/** Loads a shared walkthrough and checks it against this checkout: the right repo, and anchors that resolve. */
+export async function prepareShared(ws: Workspace, source: string) {
+  const shared = await loadWalkthrough(source, ws.root);
+  const [stale, wrongRepo, result] = await Promise.all([
+    freshness(ws.root, shared),
+    repoMismatch(ws.root, shared),
+    resolveScript(ws, { title: shared.title, segments: shared.segments }),
+  ]);
+  if (wrongRepo) return { shared, stale: null, result: { errors: [wrongRepo], warnings: [] } as typeof result };
+  return { shared, stale, result };
+}
+
+/** Links only name GitHub PRs, PR comments, and gists: never local files or arbitrary URLs. */
+function linkSource(source: string): string {
+  if (!isLinkSource(source.trim())) throw new Error("Play links can only open walkthroughs from GitHub PRs, PR comments, or gists.");
+  return source.trim();
+}
+
+/** Backs the UI's "Play in pair" links. `onPlay` sees each walkthrough that's about to play. */
+export function sharedHandler(ws: Workspace, onPlay: (script: Script) => void): SharedHandler {
+  return {
+    async preview(source) {
+      const { shared, stale, result } = await prepareShared(ws, linkSource(source));
+      const errors = result.script ? undefined : result.errors;
+      return { title: shared.title, segments: shared.segments.length, origin: shared.origin, source: shared.source, stale, errors };
+    },
+    async resolve(source) {
+      const { shared, result } = await prepareShared(ws, linkSource(source));
+      if (!result.script) throw new Error(`This walkthrough can't play here:\n- ${result.errors.join("\n- ")}`);
+      onPlay({ title: shared.title, segments: shared.segments });
+      return result.script;
+    },
+  };
 }

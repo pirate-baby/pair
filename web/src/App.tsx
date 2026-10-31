@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ClientMessage, KokoroStatus, ResolvedScript, ServerMessage } from "../../shared/protocol";
+import type { ClientMessage, KokoroStatus, ResolvedScript, ServerMessage, SharedPreview } from "../../shared/protocol";
 import { Player, type PlayerState } from "./player";
 import { KOKORO_VOICES, Speaker, type Engine } from "./speech";
 import { Stage, type TabsState } from "./stage";
@@ -27,6 +27,28 @@ function savePrefs(p: object) {
 }
 
 let logKey = 0;
+
+/** A walkthrough opened from a "Play in pair" link (/play?src=…), shown for confirmation before it plays. */
+interface SharedLink {
+  src: string;
+  preview?: SharedPreview;
+  error?: string;
+  starting?: boolean;
+}
+
+function linkFromUrl(): SharedLink | null {
+  if (location.pathname !== "/play") return null;
+  return { src: new URLSearchParams(location.search).get("src") ?? "" };
+}
+
+async function postShared<T>(action: "preview" | "play", src: string): Promise<T> {
+  const res = await fetch(`/api/shared/${action}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ src }) });
+  const body = await res.json();
+  if (!res.ok || body.error) throw new Error(body.error ?? `HTTP ${res.status}`);
+  return body as T;
+}
+
+const shortCommit = (c?: string) => c?.slice(0, 10);
 
 export function App() {
   const stage = useMemo(() => new Stage(), []);
@@ -57,6 +79,7 @@ export function App() {
   const [engine, setEngine] = useState<Engine>(prefs.engine ?? "system");
   const [kokoroVoice, setKokoroVoice] = useState(prefs.kokoroVoice ?? "af_heart");
   const [kokoro, setKokoro] = useState<KokoroStatus>({ state: "off" });
+  const [shared, setShared] = useState<SharedLink | null>(linkFromUrl);
 
   const send = (m: ClientMessage) => socket.current?.readyState === WebSocket.OPEN && socket.current.send(JSON.stringify(m));
 
@@ -68,6 +91,29 @@ export function App() {
     player.speaker.kokoroVoice = kokoroVoice;
     savePrefs({ enabled: voiceOn, voice: voiceURI, rate, engine, kokoroVoice });
   }, [player, voiceOn, voiceURI, rate, engine, kokoroVoice]);
+
+  // A "Play in pair" link: load the walkthrough and check it against this checkout before offering to play.
+  useEffect(() => {
+    if (!connected || !shared || shared.preview || shared.error) return;
+    if (!shared.src) return setShared({ ...shared, error: "This link doesn't say which walkthrough to play." });
+    postShared<SharedPreview>("preview", shared.src)
+      .then((preview) => setShared((s) => s && { ...s, preview }))
+      .catch((e) => setShared((s) => s && { ...s, error: (e as Error).message }));
+  }, [connected, shared]);
+
+  const closeShared = () => {
+    history.replaceState(null, "", "/");
+    setShared(null);
+  };
+
+  const playShared = () => {
+    if (!shared) return;
+    setShared({ ...shared, starting: true });
+    // This click also unlocks speech, so the walkthrough can start talking right away.
+    postShared("play", shared.src)
+      .then(closeShared)
+      .catch((e) => setShared((s) => s && { ...s, starting: false, error: (e as Error).message }));
+  };
 
   // Choosing Kokoro installs/loads it on the server (no-op once it's running).
   useEffect(() => {
@@ -401,6 +447,48 @@ export function App() {
           </div>
         </div>
       </div>
+
+      {shared && (
+        <div className="gesture">
+          <div className="shared-card">
+            <div className="shared-kicker">Shared walkthrough</div>
+            {shared.error ? (
+              <>
+                <div className="shared-title">Can't play this walkthrough</div>
+                <div className="shared-error">{shared.error}</div>
+              </>
+            ) : !shared.preview ? (
+              <div className="shared-loading">
+                <span className="spinner" /> {connected ? "Loading the walkthrough…" : "Connecting to pair…"}
+              </div>
+            ) : (
+              <>
+                <div className="shared-title">{shared.preview.title}</div>
+                <div className="shared-meta">
+                  {shared.preview.segments} parts
+                  {shared.preview.source?.branch && <> · branch {shared.preview.source.branch}</>}
+                  {shared.preview.source?.commit && <> · commit {shortCommit(shared.preview.source.commit)}</>}
+                </div>
+                {shared.preview.origin && <div className="shared-meta">From {shared.preview.origin}</div>}
+                {shared.preview.errors ? (
+                  <div className="shared-error">
+                    It doesn't match the code pair is showing ({rootName}):
+                    <ul>{shared.preview.errors.map((e) => <li key={e}>{e}</li>)}</ul>
+                  </div>
+                ) : (
+                  shared.preview.stale && <div className="shared-warn">{shared.preview.stale}</div>
+                )}
+              </>
+            )}
+            <div className="shared-actions">
+              {shared.preview && !shared.preview.errors && !shared.error && (
+                <button onClick={playShared} disabled={shared.starting}>{shared.starting ? "Starting…" : "▶ Play walkthrough"}</button>
+              )}
+              <button className="secondary" onClick={closeShared}>{shared.preview && !shared.preview.errors && !shared.error ? "Not now" : "Close"}</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {needsGesture && (
         <div className="gesture" onClick={() => (setNeedsGesture(false), player.play())}>
