@@ -31,17 +31,26 @@ The first time you select Kokoro expect a delay (5-10 min on most connections) w
 Requires Node.js ≥ 22.12. The installer is written for macOS (elsewhere it warns and carries on).
 
 ```
+npm install -g pair-mcp
+pair install                       # or: pair install claude | codex | opencode
+```
+
+To update, run `npm install -g pair-mcp` again. Harness configs point at the global install, so there's nothing to re-run (`npx` won't work for this, since its cache can be cleared).
+
+Or from source:
+
+```
 git clone https://github.com/pirate-baby/pair.git
 cd pair && ./install.sh            # or ./install.sh claude | codex | opencode
 ```
 
-This builds Pair and installs it into each of Claude Code, Codex, and opencode that's on your PATH (missing ones are skipped):
+Either way, Pair is installed into each of Claude Code, Codex, and opencode that's on your PATH (missing ones are skipped):
 - **Claude Code:** registers the `pair` MCP server (user scope) and sets `MCP_TOOL_TIMEOUT` in `~/.claude/settings.json`, if not already set, so long walkthroughs don't time out
 - **Codex:** adds `[mcp_servers.pair]` to `~/.codex/config.toml`
 - **opencode:** adds `mcp.pair` to `~/.config/opencode/opencode.json(c)`
 - symlinks the `code-walkthrough` skill into each harness's skills directory
 
-Each config file is copied to `<file>.pair-backup` before its first edit. Re-running is safe, and is how you update after a `git pull`.
+Each config file is copied to `<file>.pair-backup` before its first edit. Re-running is safe, and (from source) is how you update after a `git pull`.
 
 While a session is running, Pair serves its UI on `http://localhost:7420` (bound to 127.0.0.1 only). Kokoro is opt-in: the first time you pick it, Pair installs `kokoro-js` into `~/.cache/pair/kokoro` and downloads the ~330 MB model from Hugging Face.
 
