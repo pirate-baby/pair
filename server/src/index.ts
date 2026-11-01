@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -17,6 +18,13 @@ const flag = (name: string) => {
   const i = argv.indexOf(`--${name}`);
   return i === -1 ? undefined : argv[i + 1];
 };
+// `pair install [harness]` runs the bundled installer, which registers this package with the harnesses.
+if (argv[0] === "install") {
+  const script = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../install.sh");
+  const r = spawnSync("bash", [script, ...argv.slice(1)], { stdio: "inherit" });
+  process.exit(r.status ?? 1);
+}
+
 const explicitRoot = flag("root") ?? process.env.PAIR_ROOT;
 const port = Number(flag("port") ?? process.env.PAIR_PORT ?? 7420);
 

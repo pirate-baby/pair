@@ -83,6 +83,17 @@ build() {
   resolve_node
   ok "node $("$NODE" -v) at $NODE"
 
+  # Installed from npm: the package ships prebuilt and has no sources to build.
+  if [[ ! -d "$PAIR_DIR/web/src" ]]; then
+    # Harness configs point at this directory, so it must outlive the command.
+    case "$PAIR_DIR" in
+      */_npx/*) die "Run this from a global install, not npx (npx's cache can be cleared): npm install -g pair-mcp && pair install" ;;
+    esac
+    [[ -f "$SERVER" ]] || die "Missing $SERVER; reinstall the package."
+    ok "prebuilt package at $PAIR_DIR"
+    return
+  fi
+
   local npm_bin
   npm_bin="$(dirname "$NODE")/npm"
   [[ -x "$npm_bin" ]] || die "npm not found next to $NODE."

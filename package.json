@@ -1,10 +1,37 @@
 {
-  "name": "pair",
+  "name": "pair-mcp",
   "version": "0.1.0",
   "description": "Agent-driven, voice-narrated code walkthroughs in a visual editor, exposed over MCP.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "claude-code",
+    "codex",
+    "opencode",
+    "code-walkthrough",
+    "tts"
+  ],
+  "homepage": "https://github.com/pirate-baby/pair#readme",
+  "bugs": {
+    "url": "https://github.com/pirate-baby/pair/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pirate-baby/pair.git"
+  },
+  "license": "MIT",
   "type": "module",
   "bin": {
     "pair": "dist/server/server/src/index.js"
+  },
+  "files": [
+    "dist",
+    "skills",
+    "scripts/config-edit.mjs",
+    "install.sh"
+  ],
+  "engines": {
+    "node": ">=22.12"
   },
   "scripts": {
     "build": "npm run build:web && npm run build:server",
@@ -13,7 +40,8 @@
     "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.web.json --noEmit",
     "dev:web": "vite",
     "play": "node dist/server/server/src/index.js play",
-    "mcp": "node dist/server/server/src/index.js"
+    "mcp": "node dist/server/server/src/index.js",
+    "prepack": "npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
@@ -35,8 +63,6 @@
     "typescript": "^7.0.2",
     "vite": "^8.3.5"
   },
-  "private": true,
-  "license": "MIT",
   "overrides": {
     "dompurify": "^3.4.17"
   }
