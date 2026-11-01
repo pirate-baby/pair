@@ -25,4 +25,7 @@ jobs:
       - run: npm run typecheck
       - name: Check the tag matches package.json
         run: test "v$(node -p 'require("./package.json").version')" = "${GITHUB_REF_NAME}"
-      - run: npm publish # prepack builds dist/
+      # Build first so dist/ exists when npm validates the bin entry (otherwise it
+      # warns and may drop it). --ignore-scripts skips prepack's redundant rebuild.
+      - run: npm run build
+      - run: npm publish --ignore-scripts
