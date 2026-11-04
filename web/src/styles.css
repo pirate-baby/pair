@@ -267,3 +267,20 @@ button.link { background: none; padding: 0; color: var(--accent); text-decoratio
 @media (max-width: 1000px) {
   .app { grid-template-columns: 200px minmax(0, 1fr) 300px; }
 }
+
+/* A shared walkthrough's commit is shown instead of the working tree. */
+.view-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  background: #1d2a1d;
+  border-bottom: 1px solid #2f4a2f;
+  color: var(--text);
+  font-size: 12px;
+  flex: none;
+}
+.view-text { flex: 1; min-width: 0; }
+.view-text code { color: var(--hl-edge); }
+.view-bar button { flex: none; padding: 3px 10px; font-size: 12px; }
+.tree-commit { margin-left: 6px; color: var(--hl-edge); font-weight: normal; text-transform: none; }

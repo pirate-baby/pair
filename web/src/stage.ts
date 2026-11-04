@@ -51,6 +51,16 @@ export class Stage {
     this.decorations = this.editor.createDecorationsCollection();
   }
 
+  /** Close every tab and drop cached files, e.g. when the UI switches between the checkout and a commit. */
+  reset() {
+    this.editor?.setModel(null);
+    this.models.forEach((m) => m.dispose());
+    this.models.clear();
+    this.clear();
+    this.tabs = { tabs: [], active: null };
+    this.onTabs(this.tabs);
+  }
+
   dispose() {
     this.editor?.dispose();
     this.models.forEach((m) => m.dispose());
