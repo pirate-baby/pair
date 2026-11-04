@@ -40,6 +40,15 @@ class TreeStore {
     } else await this.expand(dir);
   }
 
+  /** Forget everything loaded, e.g. when the UI switches between the checkout and a commit. */
+  reset() {
+    this.children.clear();
+    this.expanded = new Set([""]);
+    this.selected = null;
+    this.emit();
+    return this.load("");
+  }
+
   select(path: string | null) {
     this.selected = path;
     this.emit();
@@ -82,11 +91,14 @@ function Dir({ dir, depth, onOpen }: { dir: string; depth: number; onOpen: (p: s
   );
 }
 
-export function FileTree({ rootName, onOpen }: { rootName: string; onOpen: (p: string) => void }) {
+export function FileTree({ rootName, commit, onOpen }: { rootName: string; commit?: string; onOpen: (p: string) => void }) {
   useSyncExternalStore(tree.subscribe, tree.snapshot);
   return (
     <div className="tree">
-      <div className="pane-title">{rootName || "Explorer"}</div>
+      <div className="pane-title">
+        {rootName || "Explorer"}
+        {commit && <span className="tree-commit" title={commit}>@ {commit.slice(0, 7)}</span>}
+      </div>
       <div className="tree-scroll" id="tree-scroll">
         <Dir dir="" depth={0} onOpen={onOpen} />
       </div>

@@ -10,7 +10,7 @@ import { Workspace } from "./files.js";
 import { Hub, type Outcome } from "./hub.js";
 import { resolveScript, writtenStyle } from "./script.js";
 import { harnessName } from "./sessions.js";
-import { freshness, loadWalkthrough, prepareShared, publishGist, publishToPr, sharedHandler } from "./share.js";
+import { prepareShared, publishGist, publishToPr, sharedHandler } from "./share.js";
 import { outline, supportsSymbols } from "./symbols.js";
 
 const argv = process.argv.slice(2);
@@ -65,6 +65,18 @@ function mainSummary() {
   return `the main walkthrough "${main.script.title}" (paused at part ${main.index + 1} of ${main.script.segments.length}: ${JSON.stringify(seg?.text.slice(0, 120) ?? "")})`;
 }
 
+/** While the UI shows a shared walkthrough's commit instead of the working tree, how the agent should read code. */
+function viewNote(): string {
+  const v = ws.view;
+  if (!v) return "";
+  const where = [v.pr && `PR #${v.pr}`, v.branch && `branch ${v.branch}`].filter(Boolean).join(", ");
+  return [
+    `Note: the UI shows commit ${v.commit}${where ? ` (${where})` : ""}, the code the shared walkthrough was written against, not the user's working tree (which nothing has changed).`,
+    `Investigate that commit, not the files on disk: git show ${v.commit}:<path>, git grep <pattern> ${v.commit}, git ls-tree -r --name-only ${v.commit}.`,
+    "Asides, outline, and resume_walkthrough are checked against it. A new main walkthrough (no aside_for) switches the UI back to the user's checkout.",
+  ].join(" ");
+}
+
 const ASK_NEXT =
   "Don't resume or change direction on your own. Ask where to go next with await_user: a short spoken prompt plus 2-3 options, " +
   "e.g. go deeper on what you just showed, or return to the main walkthrough (name it and where you were).";
@@ -95,6 +107,7 @@ function describeOutcome(o: Outcome, played?: ResolvedScript): string {
         "",
         "Investigate if needed, then answer with present_walkthrough (aside_for set to their question; keep it short and show the code you mention).",
         "When the aside finishes, don't resume automatically: ask whether to dig further or return, with await_user.",
+        viewNote(),
       ].filter(Boolean).join("\n");
     case "question": {
       const main = mainSummary();
@@ -105,6 +118,7 @@ function describeOutcome(o: Outcome, played?: ResolvedScript): string {
         "",
         IF_DONE,
         "Otherwise investigate, answer with present_walkthrough (aside_for set to the question), and when it finishes ask where to go next with await_user.",
+        viewNote(),
       ].filter(Boolean).join("\n");
     }
     case "return": {
@@ -121,6 +135,8 @@ function describeOutcome(o: Outcome, played?: ResolvedScript): string {
       return "Playback was cancelled (superseded or the request was aborted).";
     case "shared":
       return `The user opened a shared walkthrough from a link in the UI: ${o.source}\nCall play_shared_walkthrough with that source now. Don't investigate or write your own.`;
+    case "leftView":
+      return "The user closed the shared walkthrough and went back to their own checkout; the UI now shows their working tree. Ask what they'd like next with await_user.";
   }
 }
 
@@ -202,10 +218,14 @@ server.registerTool(
   async ({ title, segments, aside_for }, extra) => {
     hub.touch();
     const script = { title, segments } as Script;
-    const result = await resolveScript(ws, script, aside_for ? { question: aside_for } : undefined);
-    if (!result.script) return text(`Script not played. Fix these and call again:\n- ${result.errors.join("\n- ")}`, true);
+    // An aside answers about the code on screen (maybe a shared walkthrough's commit); a new main walkthrough is about the checkout.
+    const result = await resolveScript(aside_for ? ws : ws.at(null), script, aside_for ? { question: aside_for } : undefined);
+    if (!result.script) return text(`Script not played. Fix these and call again:\n- ${result.errors.join("\n- ")}` + (aside_for && ws.view ? `\n\n${viewNote()}` : ""), true);
     if (!(await hub.ensureOpen())) return text(`No browser connected. Ask the user to open ${hub.url}, then retry.`, true);
-    if (!aside_for) lastMain = script;
+    if (!aside_for) {
+      lastMain = script;
+      hub.setView(null);
+    }
     return text((await playResolved(result.script, extra)) + warningList(result.warnings));
   },
 );
@@ -229,10 +249,10 @@ server.registerTool(
     if (!lastMain) return text("There's no walkthrough to share yet. Present one with present_walkthrough first.", true);
     try {
       if (to === "gist") {
-        const { url, warnings } = await publishGist(ws.root, lastMain);
+        const { url, warnings } = await publishGist(ws.root, lastMain, ws.view);
         return text(`Published "${lastMain.title}" as a secret gist: ${url}` + warningList(warnings));
       }
-      const { url, warnings } = await publishToPr(ws.root, lastMain, pr);
+      const { url, warnings } = await publishToPr(ws.root, lastMain, pr, ws.view);
       return text(`Posted "${lastMain.title}" on the PR: ${url}\nReviewers can ask their agent to play the walkthrough on that PR.` + warningList(warnings));
     } catch (e) {
       return text((e as Error).message, true);
@@ -245,7 +265,8 @@ server.registerTool(
   {
     description: [
       "Play a walkthrough someone already shared (a PR number or URL, a gist URL or id, a raw URL, or a local .json file) exactly as written, instead of investigating and writing a new one.",
-      "It's re-validated against this checkout. Blocks and returns outcomes like present_walkthrough, and questions are handled the same way (answer with asides).",
+      "It plays against the exact commit it was written for, fetched and read from git if needed, so the user doesn't have to check anything out and their working tree isn't touched.",
+      "Blocks and returns outcomes like present_walkthrough, and questions are handled the same way (answer with asides).",
     ].join(" "),
     inputSchema: {
       source: z.string().describe('e.g. "123" or a PR URL (plays the latest walkthrough posted on it), a gist URL, or a path to a walkthrough .json file.'),
@@ -259,26 +280,32 @@ server.registerTool(
     } catch (e) {
       return text((e as Error).message, true);
     }
-    const { shared, stale, result } = prepared;
+    const { shared, view, stale, result } = prepared;
     if (!result.script) {
       return text(
         [
           "The shared walkthrough can't play here, so nothing played:",
           `- ${result.errors.join("\n- ")}`,
-          stale ? `\n${stale}` : "",
-          "\nTell the user what's wrong (usually: check out the branch or commit it was written against). Don't write a replacement walkthrough unless they ask.",
+          "\nTell the user what's wrong. Don't write a replacement walkthrough unless they ask.",
         ].join("\n"),
         true,
       );
     }
     if (!(await hub.ensureOpen())) return text(`No browser connected. Ask the user to open ${hub.url}, then retry.`, true);
     lastMain = { title: shared.title, segments: shared.segments };
+    hub.setView(view);
     const note = (shared.origin ? `\n\nLoaded from ${shared.origin}.` : "") + (stale ? `\n\nHeads-up for the user: ${stale}` : "");
-    return text((await playResolved(result.script, extra)) + note + warningList(result.warnings));
+    const outcome = await playResolved(result.script, extra);
+    // The outcome may already explain the view (questions); otherwise say it once here.
+    const shown = ws.view && !outcome.includes(viewNote()) ? `\n\n${viewNote()}` : "";
+    return text(outcome + note + shown + warningList(result.warnings));
   },
 );
 
-hub.shared = sharedHandler(ws, (s) => (lastMain = s));
+hub.shared = sharedHandler(ws, (s, view) => {
+  lastMain = s;
+  hub.setView(view);
+});
 
 server.registerTool(
   "resume_walkthrough",
@@ -363,15 +390,15 @@ server.registerTool(
 async function playFile(source: string) {
   hub.harness = "pair play (no agent)";
   await hub.listen(port);
-  const shared = await loadWalkthrough(source, ws.root, process.cwd());
-  const stale = await freshness(ws.root, shared);
+  const { view, stale, result } = await prepareShared(ws, source, process.cwd());
   if (stale) console.error("note:", stale);
-  const result = await resolveScript(ws, { title: shared.title, segments: shared.segments });
   result.warnings.forEach((w) => console.error("warning:", w));
   if (!result.script) {
     result.errors.forEach((e) => console.error("error:", e));
     process.exit(1);
   }
+  if (view) console.error(`Showing commit ${view.commit.slice(0, 10)}${view.branch ? ` (${view.branch})` : ""}; your checkout isn't touched.`);
+  hub.setView(view);
   console.error(`Opening ${hub.url} …`);
   await hub.ensureOpen();
   let script = result.script;

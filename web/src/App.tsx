@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ClientMessage, KokoroStatus, ResolvedScript, ServerMessage, SessionInfo, SharedPreview } from "../../shared/protocol";
+import type { ClientMessage, CommitView, KokoroStatus, ResolvedScript, ServerMessage, SessionInfo, SharedPreview } from "../../shared/protocol";
 import { Player, type PlayerState } from "./player";
 import { KOKORO_VOICES, Speaker, type Engine } from "./speech";
 import { Stage, type TabsState } from "./stage";
@@ -80,6 +80,9 @@ export function App() {
   const [kokoroVoice, setKokoroVoice] = useState(prefs.kokoroVoice ?? "af_heart");
   const [kokoro, setKokoro] = useState<KokoroStatus>({ state: "off" });
   const [shared, setShared] = useState<SharedLink | null>(linkFromUrl);
+  // A commit shown instead of the working tree (a shared walkthrough's code), or null.
+  const [view, setView] = useState<CommitView | null>(null);
+  const viewCommit = useRef<string | null>(null);
 
   const send = (m: ClientMessage) => socket.current?.readyState === WebSocket.OPEN && socket.current.send(JSON.stringify(m));
 
@@ -181,6 +184,17 @@ export function App() {
         case "main":
           setPausedMain(m.paused);
           break;
+        case "view": {
+          setView(m.view);
+          const commit = m.view?.commit ?? null;
+          // Sent on every connect too; only a real switch invalidates the loaded files.
+          if (commit !== viewCommit.current) {
+            viewCommit.current = commit;
+            stage.reset();
+            tree.reset();
+          }
+          break;
+        }
         case "kokoro":
           player.speaker.kokoroStatus = m.status;
           setKokoro(m.status);
@@ -277,9 +291,21 @@ export function App() {
 
   return (
     <div className="app">
-      <FileTree rootName={rootName} onOpen={(p) => stage.open(p, false)} />
+      <FileTree rootName={rootName} commit={view?.commit} onOpen={(p) => stage.open(p, false)} />
 
       <div className="editor-pane">
+        {view && (
+          <div className="view-bar">
+            <span className="view-text">
+              Showing {view.pr ? <>PR #{view.pr} </> : null}
+              {view.branch ? <><strong>{view.branch}</strong> </> : null}
+              at <code>{shortCommit(view.commit)}</code>, the code this walkthrough was written against. Your checkout hasn't changed.
+            </span>
+            <button className="secondary" onClick={() => send({ type: "leaveView" })} title="Stop this walkthrough and show your own files again">
+              Back to your checkout
+            </button>
+          </div>
+        )}
         <div className="tabs">
           {tabs.tabs.map((t) => (
             <div key={t} data-tab-path={t} className={`tab ${t === tabs.active ? "active" : ""}`} onClick={() => stage.open(t, false)} title={t}>
@@ -468,10 +494,13 @@ export function App() {
 function SharedCard({ link, rootName, connected, onPlay, onClose }: { link: SharedLink; rootName: string; connected: boolean; onPlay: () => void; onClose: () => void }) {
   const p = link.preview;
   const self = p?.sessions.find((s) => s.self);
+  const playable = !!p && !p.errors && !link.error;
+  // Any session in the repo can play it (the code comes from git, not the checkout), so only
+  // offer others when this one can't, or when another has an agent listening and this one doesn't.
   const others = (p?.sessions ?? [])
     .filter((s) => !s.self && p?.repo && s.repo === p.repo)
+    .filter((s) => !playable || (s.listening && !self?.listening))
     .sort((a, b) => Number(b.listening) - Number(a.listening));
-  const playable = !!p && !p.errors && !link.error;
   const openIn = (s: SessionInfo) => (location.href = `${s.url}/play?src=${encodeURIComponent(link.src)}`);
 
   return (
@@ -502,12 +531,14 @@ function SharedCard({ link, rootName, connected, onPlay, onClose }: { link: Shar
               {others.length === 0 && ` No pair session is open in ${p.repo ?? "that repo"}. Ask your agent anything in a checkout of it to start one, then click the link again.`}
             </div>
           ) : p.errors ? (
-            <div className="shared-error">
-              It doesn't match the code this session is showing ({rootName}):
-              <ul>{p.errors.map((e) => <li key={e}>{e}</li>)}</ul>
-            </div>
+            <div className="shared-error">{p.errors.join(" ")}</div>
           ) : (
             <>
+              {p.snapshot && (
+                <div className="shared-note">
+                  Plays against the code it was written for{p.source?.branch ? <> on <strong>{p.source.branch}</strong></> : null}. You don't need to check anything out, and your files aren't changed.
+                </div>
+              )}
               {p.stale && <div className="shared-warn">{p.stale}</div>}
               {self && !self.listening && (
                 <div className="shared-note">
@@ -518,7 +549,7 @@ function SharedCard({ link, rootName, connected, onPlay, onClose }: { link: Shar
           )}
           {others.length > 0 && (
             <div className="session-pick">
-              <div className="session-pick-label">{playable ? "Or play it in another session:" : "Play it in:"}</div>
+              <div className="session-pick-label">{playable ? "Or play it where your agent is listening:" : "Play it in:"}</div>
               {others.map((s) => (
                 <button key={s.pid} className="session-row" onClick={() => openIn(s)}>
                   <span className={`session-dot ${s.listening ? "on" : ""}`} />
