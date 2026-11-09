@@ -101,7 +101,7 @@ export class Speaker {
     const key = `${this.kokoroVoice}|${this.rate}|${text}`;
     let p = this.clips.get(key);
     if (!p) {
-      p = fetch("/api/tts/kokoro", {
+      p = fetch("api/tts/kokoro", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ text, voice: this.kokoroVoice, speed: this.rate }),

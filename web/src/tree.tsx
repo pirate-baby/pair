@@ -21,7 +21,7 @@ class TreeStore {
 
   async load(dir: string) {
     if (this.children.has(dir)) return;
-    const res = await fetch(`/api/list?dir=${encodeURIComponent(dir)}`);
+    const res = await fetch(`api/list?dir=${encodeURIComponent(dir)}`);
     const body = await res.json();
     this.children.set(dir, Array.isArray(body) ? body : []);
     this.emit();
