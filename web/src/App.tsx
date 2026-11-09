@@ -37,12 +37,12 @@ interface SharedLink {
 }
 
 function linkFromUrl(): SharedLink | null {
-  if (location.pathname !== "/play") return null;
+  if (!location.pathname.endsWith("/play")) return null;
   return { src: new URLSearchParams(location.search).get("src") ?? "" };
 }
 
 async function postShared<T>(action: "preview" | "play", src: string): Promise<T> {
-  const res = await fetch(`/api/shared/${action}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ src }) });
+  const res = await fetch(`api/shared/${action}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ src }) });
   const body = await res.json();
   if (!res.ok || body.error) throw new Error(body.error ?? `HTTP ${res.status}`);
   return body as T;
@@ -121,7 +121,7 @@ export function App() {
   // Choosing Kokoro installs/loads it on the server (no-op once it's running).
   useEffect(() => {
     if (connected && engine === "kokoro" && (kokoro.state === "off" || kokoro.state === "error")) {
-      fetch("/api/tts/kokoro/enable", { method: "POST" }).catch(() => {});
+      fetch("api/tts/kokoro/enable", { method: "POST" }).catch(() => {});
     }
   }, [connected, engine, kokoro.state === "off"]);
 
@@ -150,7 +150,10 @@ export function App() {
     let closed = false;
     let retry: number | undefined;
     const connect = () => {
-      const s = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+      // Relative to the page, so pair also works behind a proxy that serves it under a path.
+      const wsUrl = new URL("ws", location.href);
+      wsUrl.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+      const s = new WebSocket(wsUrl);
       socket.current = s;
       s.onopen = () => setConnected(true);
       s.onclose = () => {
@@ -420,7 +423,7 @@ export function App() {
             {kokoro.state === "error" ? (
               <>
                 Kokoro failed: {kokoro.message}{" "}
-                <button className="link" onClick={() => fetch("/api/tts/kokoro/enable", { method: "POST" })}>Retry</button>
+                <button className="link" onClick={() => fetch("api/tts/kokoro/enable", { method: "POST" })}>Retry</button>
               </>
             ) : (
               <>

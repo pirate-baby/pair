@@ -7,6 +7,8 @@ const port = process.env.PAIR_PORT ?? "7420";
 
 export default defineConfig({
   root: "web",
+  // Relative asset URLs, so the UI also loads when a proxy serves it under a path.
+  base: "./",
   plugins: [react()],
   build: { outDir: "../dist/web", emptyOutDir: true },
   server: {

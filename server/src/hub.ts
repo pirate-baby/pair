@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { timingSafeEqual } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -6,8 +7,10 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { ClientMessage, CommitView, ResolvedScript, ServerMessage, SharedPreview, VisibleContext } from "../../shared/protocol.js";
 import type { Workspace } from "./files.js";
+import { hosted, speech } from "./config.js";
 import { Kokoro } from "./kokoro.js";
-import { SessionRegistry } from "./sessions.js";
+import { RemoteKokoro } from "./kokoro-remote.js";
+import { HttpSessionRegistry, type Registry, SessionRegistry } from "./sessions.js";
 
 const WEB_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../web");
 const MIME: Record<string, string> = {
@@ -68,11 +71,13 @@ export class Hub {
   /** An answer that arrived while no tool call was waiting; handed to the next await_user. */
   private queued: Outcome | null = null;
   private connectWaiters: (() => void)[] = [];
-  private kokoro = new Kokoro();
+  private kokoro: Kokoro | RemoteKokoro = speech ? new RemoteKokoro(speech) : new Kokoro();
   private ended: { message: string | null } | null = null;
   private silenceTimer: NodeJS.Timeout | null = null;
   shared: SharedHandler | null = null;
-  readonly sessions = new SessionRegistry();
+  readonly sessions: Registry = hosted?.registryUrl
+    ? new HttpSessionRegistry(hosted.registryUrl, hosted.serviceToken, process.env.PAIR_PUBLIC_URL)
+    : new SessionRegistry();
   /** Shown in the session picker, e.g. "Claude Code". */
   harness = "Unknown agent";
 
@@ -86,13 +91,13 @@ export class Hub {
     }));
     const wss = new WebSocketServer({ noServer: true });
     server.on("upgrade", (req, socket, head) => {
-      if (req.url !== "/ws" || !fromLocalPage(req)) return socket.destroy();
+      if (new URL(req.url ?? "/", "http://x").pathname !== "/ws" || !allowed(req)) return socket.destroy();
       wss.handleUpgrade(req, socket, head, (sock) => this.connect(sock));
     });
     for (let port = preferredPort; port < preferredPort + 20; port++) {
       const ok = await new Promise<boolean>((resolve) => {
         server.once("error", () => resolve(false));
-        server.listen(port, "127.0.0.1", () => resolve(true));
+        server.listen(port, hosted?.host ?? "127.0.0.1", () => resolve(true));
       });
       if (ok) {
         this.url = `http://localhost:${port}`;
@@ -107,6 +112,13 @@ export class Hub {
   /** Opens a browser tab if none is connected, and waits for it. */
   async ensureOpen(): Promise<boolean> {
     if (this.clients.size) return true;
+    // Hosted: the viewer comes in through the service's proxy; there is no local browser to open.
+    if (hosted) {
+      return new Promise((resolve) => {
+        const t = setTimeout(() => resolve(false), hosted!.connectTimeoutMs);
+        this.connectWaiters.push(() => (clearTimeout(t), resolve(true)));
+      });
+    }
     const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
     if (!process.env.PAIR_NO_OPEN) spawn(cmd, [this.url], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
     return new Promise((resolve) => {
@@ -343,7 +355,7 @@ export class Hub {
   }
 
   private async handle(req: http.IncomingMessage, res: http.ServerResponse) {
-    if (!fromLocalPage(req)) return res.writeHead(403, { "content-type": "text/plain" }).end("Forbidden");
+    if (!allowed(req)) return res.writeHead(403, { "content-type": "text/plain" }).end("Forbidden");
     const url = new URL(req.url ?? "/", "http://localhost");
     const json = (body: unknown, status = 200) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
 
@@ -414,6 +426,17 @@ function readBody(req: http.IncomingMessage): Promise<string> {
 }
 
 const LOCAL_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
+
+/**
+ * Hosted: only the service's proxy reaches us, and it adds this session's token to
+ * every request (the token never reaches the browser). Otherwise: local pages only.
+ */
+function allowed(req: http.IncomingMessage): boolean {
+  if (!hosted) return fromLocalPage(req);
+  const expected = `Bearer ${hosted.token}`;
+  const got = req.headers.authorization ?? "";
+  return got.length === expected.length && timingSafeEqual(Buffer.from(got), Buffer.from(expected));
+}
 
 /**
  * Only the Pair UI itself may talk to this server. The Host check defeats DNS

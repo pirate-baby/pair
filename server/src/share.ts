@@ -7,6 +7,7 @@ import type { Script, SharedWalkthrough } from "../../shared/protocol.js";
 import type { CommitView, Workspace } from "./files.js";
 import type { SharedHandler } from "./hub.js";
 import { parseNarration, resolveScript } from "./script.js";
+import { hosted } from "./config.js";
 import { repoSlug } from "./sessions.js";
 
 const exec = promisify(execFile);
@@ -31,7 +32,7 @@ function scriptPaths(script: Script): string[] {
 async function sourceOf(root: string, view?: CommitView | null): Promise<SharedWalkthrough["source"]> {
   const [repo, commit, branch] = await Promise.all([
     tryGit(root, "remote", "get-url", "origin"),
-    view ? view.commit : tryGit(root, "rev-parse", "HEAD"),
+    view ? view.commit : (hosted?.sha ?? tryGit(root, "rev-parse", "HEAD")),
     view ? (view.branch ?? null) : tryGit(root, "rev-parse", "--abbrev-ref", "HEAD"),
   ]);
   return {
@@ -452,4 +453,21 @@ export function sharedHandler(ws: Workspace, onPlay: (script: Script, view: Comm
       return result.script;
     },
   };
+}
+
+/**
+ * Hosted mode: hands the walkthrough to the service running this session, which stores
+ * it and attaches it wherever it belongs (e.g. the pull request). Returns where it went.
+ */
+export async function publishToEndpoint(root: string, script: Script, view?: CommitView | null): Promise<{ url: string; warnings: string[] }> {
+  if (!hosted?.shareUrl) throw new Error("No share endpoint is configured.");
+  const shared = shareable(script, await sourceOf(root, view));
+  const res = await fetch(hosted.shareUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...(hosted.serviceToken && { authorization: `Bearer ${hosted.serviceToken}` }) },
+    body: JSON.stringify(shared),
+  });
+  if (!res.ok) throw new Error(`Sharing failed: HTTP ${res.status} ${(await res.text()).slice(0, 300)}`);
+  const { url } = (await res.json()) as { url: string };
+  return { url, warnings: [] };
 }

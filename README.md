@@ -66,6 +66,27 @@ No PR? Ask for a gist instead. Secret gists are unlisted, but anyone with the li
 
 
 
+## Hosted mode
+
+Pair can also run as one session of a service (for example, a walkthrough container behind a web app), instead of on your machine. Everything below is off unless you turn it on; the local install behaves as before.
+
+| Setting | Flag / environment | What it does |
+| --- | --- | --- |
+| Hosted | `--hosted` / `PAIR_HOSTED=1` | Never opens a browser; waits for a viewer to connect through the service's proxy |
+| Bind address | `--host` / `PAIR_HOST` (default `0.0.0.0`) | Where the UI listens |
+| Session token | `--token` / `PAIR_TOKEN` (required) | Every request and WebSocket upgrade must carry `Authorization: Bearer <token>`; the proxy adds it, so it never reaches the browser. Replaces the localhost check |
+| Session registry | `--registry-url` / `PAIR_REGISTRY_URL` | `PUT` this session's info and `GET` every session, instead of files under `~/.cache/pair/sessions` |
+| Public URL | `PAIR_PUBLIC_URL` | The URL viewers reach this session at, recorded in the registry |
+| Commit | `--sha` / `PAIR_SHA` | The commit shared walkthroughs record (default: `git rev-parse HEAD`) |
+| Share endpoint | `--share-url` / `PAIR_SHARE_URL` | `share_walkthrough` posts the walkthrough JSON there instead of using `gh`; the response is `{"url": ...}` |
+| Service token | `PAIR_SERVICE_TOKEN` | Bearer token for the registry and share endpoints |
+| Author mode | `--author` / `PAIR_AUTHOR=1` | `present_walkthrough` validates and records the script without playing it, so an agent can write a walkthrough with no viewer (then `share_walkthrough`) |
+| Viewer wait | `PAIR_CONNECT_TIMEOUT_MS` (default 10 minutes) | How long tools wait for a viewer |
+
+**Remote Kokoro** (hosted or not): set `--tts-url` / `PAIR_TTS_URL` to an OpenAI-compatible speech endpoint (DeepInfra, Together AI, or a self-hosted [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI)), with `PAIR_TTS_API_KEY` and optionally `PAIR_TTS_MODEL` (default `hexgrad/Kokoro-82M`). Pair then calls `/audio/speech` instead of installing kokoro-js and downloading the model. Word timings are estimated from character positions, since those endpoints return audio only.
+
+The UI uses relative URLs, so a proxy can serve it under a path (for example `/pair/<session>/`).
+
 ## License
 
 [MIT](LICENSE)

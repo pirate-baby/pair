@@ -38,7 +38,7 @@ const alive = (pid: number) => {
   }
 };
 
-export class SessionRegistry {
+export class SessionRegistry implements Registry {
   private file = path.join(DIR, `${process.pid}.json`);
   private info: Omit<SessionInfo, "self"> | null = null;
   private writing = Promise.resolve();
@@ -100,5 +100,73 @@ export class SessionRegistry {
       }
     }
     return out.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+  }
+}
+
+/** What the hub needs from a session registry. */
+export interface Registry {
+  start(url: string, root: string, harness: string): Promise<void>;
+  setRoot(root: string): Promise<void>;
+  update(patch: Partial<Omit<SessionInfo, "self">>): void;
+  list(): Promise<SessionInfo[]>;
+}
+
+/**
+ * Hosted mode: sessions register with the service that runs them (PUT this session's
+ * info; GET returns every session the viewer may switch to), not with files on one
+ * machine keyed by process ID.
+ */
+export class HttpSessionRegistry implements Registry {
+  private info: Omit<SessionInfo, "self"> | null = null;
+  private writing = Promise.resolve();
+
+  constructor(
+    private endpoint: string,
+    private token: string | undefined,
+    /** The public URL viewers reach this session at (the proxy's), not the bind address. */
+    private publicUrl?: string,
+  ) {}
+
+  private headers(): Record<string, string> {
+    return { "content-type": "application/json", ...(this.token && { authorization: `Bearer ${this.token}` }) };
+  }
+
+  async start(url: string, root: string, harness: string) {
+    const port = Number(new URL(url).port);
+    this.info = null;
+    const remote = await exec("git", ["remote", "get-url", "origin"], { cwd: root }).then((r) => r.stdout.trim(), () => null);
+    // Set via update() so the first record is always sent, even if nothing changes later.
+    this.info = { pid: process.pid, port, url: this.publicUrl ?? url, root: "", repo: null, harness, listening: false, startedAt: new Date().toISOString() };
+    this.update({ root, repo: repoSlug(remote) });
+    await this.writing;
+  }
+
+  async setRoot(root: string) {
+    if (!this.info) return;
+    const remote = await exec("git", ["remote", "get-url", "origin"], { cwd: root }).then((r) => r.stdout.trim(), () => null);
+    this.update({ root, repo: repoSlug(remote) });
+  }
+
+  update(patch: Partial<Omit<SessionInfo, "self">>) {
+    if (!this.info) return;
+    const next = { ...this.info, ...patch };
+    if (JSON.stringify(next) === JSON.stringify(this.info)) return;
+    this.info = next;
+    const body = JSON.stringify(next);
+    this.writing = this.writing
+      .then(() => fetch(this.endpoint, { method: "PUT", headers: this.headers(), body }))
+      .then((r) => void (r.ok || console.error("[pair] session registry:", r.status)))
+      .catch((e) => console.error("[pair] session registry:", e));
+  }
+
+  async list(): Promise<SessionInfo[]> {
+    await this.writing;
+    try {
+      const r = await fetch(this.endpoint, { headers: this.headers() });
+      const all = r.ok ? ((await r.json()) as SessionInfo[]) : [];
+      return all.map((s) => ({ ...s, self: s.url === this.info?.url }));
+    } catch {
+      return this.info ? [{ ...this.info, self: true }] : [];
+    }
   }
 }

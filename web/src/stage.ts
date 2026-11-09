@@ -108,7 +108,7 @@ export class Stage {
 
   async activate(path: string) {
     if (!this.models.has(path)) {
-      const res = await fetch(`/api/file?path=${encodeURIComponent(path)}`);
+      const res = await fetch(`api/file?path=${encodeURIComponent(path)}`);
       const body = await res.json();
       const content = typeof body.content === "string" ? body.content : `// ${body.error ?? "Could not load file"}`;
       this.models.set(path, monaco.editor.createModel(content, undefined, monaco.Uri.file("/" + path)));

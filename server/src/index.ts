@@ -10,7 +10,8 @@ import { Workspace } from "./files.js";
 import { Hub, type Outcome } from "./hub.js";
 import { resolveScript, writtenStyle } from "./script.js";
 import { harnessName } from "./sessions.js";
-import { prepareShared, publishGist, publishToPr, sharedHandler } from "./share.js";
+import { hosted } from "./config.js";
+import { prepareShared, publishGist, publishToEndpoint, publishToPr, sharedHandler } from "./share.js";
 import { outline, supportsSymbols } from "./symbols.js";
 
 const argv = process.argv.slice(2);
@@ -221,6 +222,15 @@ server.registerTool(
     // An aside answers about the code on screen (maybe a shared walkthrough's commit); a new main walkthrough is about the checkout.
     const result = await resolveScript(aside_for ? ws : ws.at(null), script, aside_for ? { question: aside_for } : undefined);
     if (!result.script) return text(`Script not played. Fix these and call again:\n- ${result.errors.join("\n- ")}` + (aside_for && ws.view ? `\n\n${viewNote()}` : ""), true);
+    // Author mode (hosted, no viewer): the script is checked and kept, never played.
+    if (hosted?.author) {
+      lastMain = script;
+      return text(
+        `Recorded "${title}" (${result.script.segments.length} segments; every anchor resolved). Author mode: nothing plays here.` +
+          " Call share_walkthrough to publish it, then end_session." +
+          warningList(result.warnings),
+      );
+    }
     if (!(await hub.ensureOpen())) return text(`No browser connected. Ask the user to open ${hub.url}, then retry.`, true);
     if (!aside_for) {
       lastMain = script;
@@ -235,7 +245,9 @@ server.registerTool(
   {
     description: [
       "Publish the most recent main walkthrough (not asides) so teammates with pair can replay it without regenerating it.",
-      "Only call this when the user asks to share or publish a walkthrough. Uses the gh CLI.",
+      hosted?.shareUrl
+        ? "Only call this when the user asks to share or publish a walkthrough (or your instructions say to). It goes to the service hosting this session, which attaches it to the pull request."
+        : "Only call this when the user asks to share or publish a walkthrough. Uses the gh CLI.",
       "By default it's posted as a comment on the pull request (visible to anyone who can see the repo); reviewers then just ask to play the walkthrough on that PR.",
       "With to: \"gist\" it's a secret gist instead: unlisted, but readable by anyone with the link, including code snippets used as anchors.",
     ].join(" "),
@@ -248,6 +260,10 @@ server.registerTool(
     hub.touch();
     if (!lastMain) return text("There's no walkthrough to share yet. Present one with present_walkthrough first.", true);
     try {
+      if (hosted?.shareUrl) {
+        const { url } = await publishToEndpoint(ws.root, lastMain, ws.view);
+        return text(`Shared "${lastMain.title}": ${url}`);
+      }
       if (to === "gist") {
         const { url, warnings } = await publishGist(ws.root, lastMain, ws.view);
         return text(`Published "${lastMain.title}" as a secret gist: ${url}` + warningList(warnings));
