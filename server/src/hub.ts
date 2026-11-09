@@ -4,7 +4,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
-import type { ClientMessage, ResolvedScript, ServerMessage, SharedPreview, VisibleContext } from "../../shared/protocol.js";
+import type { ClientMessage, CommitView, ResolvedScript, ServerMessage, SharedPreview, VisibleContext } from "../../shared/protocol.js";
 import type { Workspace } from "./files.js";
 import { Kokoro } from "./kokoro.js";
 import { SessionRegistry } from "./sessions.js";
@@ -28,7 +28,9 @@ export type Outcome =
   | { status: "idle" }
   | { status: "cancelled" }
   /** The user opened a shared walkthrough from a link while the agent was waiting on us. */
-  | { status: "shared"; source: string };
+  | { status: "shared"; source: string }
+  /** The user closed a shared walkthrough's commit and went back to their checkout. */
+  | { status: "leftView" };
 
 /** Loading shared walkthroughs for the /play link, supplied by the MCP server. */
 export interface SharedHandler {
@@ -133,6 +135,16 @@ export class Hub {
       this.setStatus("No reply from the agent. It may have finished, so continue in its chat, or ask again here.");
     }, AGENT_SILENCE_MS);
     this.silenceTimer.unref();
+  }
+
+  /**
+   * Switches the code the UI shows: a commit (read from git, nothing checked out) or,
+   * with null, the working tree. Scripts must be resolved against the same view they play in.
+   */
+  setView(view: CommitView | null) {
+    if (view?.commit === this.ws.view?.commit) return;
+    this.ws.setView(view);
+    this.broadcast({ type: "view", view });
   }
 
   /** Ends the session: the UI says goodbye (if given) and stops taking questions. */
@@ -283,6 +295,20 @@ export class Hub {
         }
         break;
       }
+      case "leaveView": {
+        if (!this.ws.view) break;
+        // Everything loaded so far points into the commit's code, so none of it can resume against the checkout.
+        const playing = !!w?.scriptId;
+        this.current = this.main = null;
+        this.broadcast({ type: "stop" });
+        this.setView(null);
+        this.broadcastMain();
+        if (playing) {
+          this.settle({ status: "leftView" });
+          if (!w!.unattended) this.expectAgent();
+        }
+        break;
+      }
       case "end":
         this.endSession(null);
         break;
@@ -293,6 +319,7 @@ export class Hub {
     this.clients.add(sock);
     const send = (m: ServerMessage) => sock.send(JSON.stringify(m));
     send({ type: "hello", root: this.ws.root, rootName: this.ws.name });
+    send({ type: "view", view: this.ws.view });
     send({ type: "status", text: this.status });
     if (this.ended) send({ type: "ended", message: this.ended.message });
     send({ type: "kokoro", status: this.kokoro.status });

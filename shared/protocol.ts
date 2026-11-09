@@ -42,6 +42,14 @@ export interface SharedWalkthrough extends Script {
   created?: string;
 }
 
+/** A commit the session shows instead of the working tree, read from git without checking it out. */
+export interface CommitView {
+  commit: string;
+  branch?: string;
+  /** PR number it came from, if any. */
+  pr?: number;
+}
+
 /** What the UI shows before playing a walkthrough opened from a link (POST /api/shared/preview). */
 export interface SharedPreview {
   title: string;
@@ -49,7 +57,9 @@ export interface SharedPreview {
   /** Where it was loaded from and who posted it. */
   origin?: string;
   source?: SharedWalkthrough["source"];
-  /** The checkout differs from the code it was written against. */
+  /** It plays against the exact commit it was written for (read from git), not the working tree. */
+  snapshot?: boolean;
+  /** It can't play as written, so it plays against the checkout, which differs from the code it was written against. */
   stale?: string | null;
   /** Why it can't play here (wrong repo, anchors that don't exist in this checkout). */
   errors?: string[];
@@ -135,6 +145,8 @@ export type ServerMessage =
   | { type: "main"; paused: { title: string; index: number; total: number } | null }
   /** The session is over (the agent said goodbye, or the user ended it). */
   | { type: "ended"; message: string | null }
+  /** The code the UI shows: a commit (while a shared walkthrough's code is open), or null for the working tree. */
+  | { type: "view"; view: CommitView | null }
   | { type: "stop" };
 
 export type ClientMessage =
@@ -143,6 +155,8 @@ export type ClientMessage =
   | { type: "interrupt"; id: string | null; index: number; question: string; context: VisibleContext; choice?: number }
   /** "Back to <main walkthrough>" was clicked. */
   | { type: "return"; context: VisibleContext }
+  /** "Back to your checkout" was clicked while a commit was shown. */
+  | { type: "leaveView" }
   | { type: "end" };
 
 export interface TreeEntry {

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { Script, SharedWalkthrough } from "../../shared/protocol.js";
-import type { Workspace } from "./files.js";
+import type { CommitView, Workspace } from "./files.js";
 import type { SharedHandler } from "./hub.js";
 import { parseNarration, resolveScript } from "./script.js";
 import { repoSlug } from "./sessions.js";
@@ -24,12 +24,15 @@ function scriptPaths(script: Script): string[] {
   return [...paths];
 }
 
-/** Where the walkthrough was written: the repo, commit, and branch it was validated against. */
-async function sourceOf(root: string): Promise<SharedWalkthrough["source"]> {
+/**
+ * Where the walkthrough was written: the repo, commit, and branch it was validated against.
+ * With a view (the session is showing a shared walkthrough's commit), that commit, not HEAD.
+ */
+async function sourceOf(root: string, view?: CommitView | null): Promise<SharedWalkthrough["source"]> {
   const [repo, commit, branch] = await Promise.all([
     tryGit(root, "remote", "get-url", "origin"),
-    tryGit(root, "rev-parse", "HEAD"),
-    tryGit(root, "rev-parse", "--abbrev-ref", "HEAD"),
+    view ? view.commit : tryGit(root, "rev-parse", "HEAD"),
+    view ? (view.branch ?? null) : tryGit(root, "rev-parse", "--abbrev-ref", "HEAD"),
   ]);
   return {
     ...(repo && { repo: repo.replace(/^https:\/\/[^@/]+@/, "https://") }),
@@ -39,11 +42,12 @@ async function sourceOf(root: string): Promise<SharedWalkthrough["source"]> {
 }
 
 /** Problems that would stop a teammate from seeing the same code the walkthrough was written against. */
-async function publishWarnings(root: string, shared: SharedWalkthrough): Promise<string[]> {
+async function publishWarnings(root: string, shared: SharedWalkthrough, view?: CommitView | null): Promise<string[]> {
   const { commit } = shared.source ?? {};
   if (!commit) return ["This isn't a git repo, so the walkthrough has no commit to pin to."];
   const warnings: string[] = [];
-  const dirty = await tryGit(root, "status", "--porcelain", "--", ...scriptPaths(shared));
+  // Uncommitted changes only matter when the walkthrough was checked against the working tree.
+  const dirty = !view && (await tryGit(root, "status", "--porcelain", "--", ...scriptPaths(shared)));
   if (dirty) warnings.push(`Files in the walkthrough have uncommitted changes, so viewers may see different code:\n${dirty}`);
   const remote = await tryGit(root, "branch", "-r", "--contains", commit);
   if (!remote) warnings.push(`Commit ${commit.slice(0, 10)} isn't on any remote branch yet. Push it so viewers can check it out.`);
@@ -150,9 +154,9 @@ async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
  * Posts a walkthrough as a comment on a pull request (via the gh CLI) and returns the comment URL.
  * `pr` is a number or URL; omitted, gh uses the PR for the current branch.
  */
-export async function publishToPr(root: string, script: Script, pr?: string): Promise<{ url: string; warnings: string[] }> {
-  const shared = shareable(script, await sourceOf(root));
-  const warnings = await publishWarnings(root, shared);
+export async function publishToPr(root: string, script: Script, pr?: string, view?: CommitView | null): Promise<{ url: string; warnings: string[] }> {
+  const shared = shareable(script, await sourceOf(root, view));
+  const warnings = await publishWarnings(root, shared, view);
   const body = prComment(shared);
   if (body.length > MAX_COMMENT) throw new Error(`The walkthrough is too large for a PR comment (${body.length} characters; GitHub allows about 65,000). Share it as a gist instead.`);
   return withTempDir(async (dir) => {
@@ -175,9 +179,9 @@ export async function publishToPr(root: string, script: Script, pr?: string): Pr
 }
 
 /** Publishes a walkthrough as a secret GitHub gist (via the gh CLI) and returns its URL. */
-export async function publishGist(root: string, script: Script): Promise<{ url: string; warnings: string[] }> {
-  const shared = shareable(script, await sourceOf(root));
-  const warnings = await publishWarnings(root, shared);
+export async function publishGist(root: string, script: Script, view?: CommitView | null): Promise<{ url: string; warnings: string[] }> {
+  const shared = shareable(script, await sourceOf(root, view));
+  const warnings = await publishWarnings(root, shared, view);
   return withTempDir(async (dir) => {
     await writeFile(path.join(dir, MAIN_FILE), JSON.stringify(shared, null, 2) + "\n");
     await writeFile(path.join(dir, "README.md"), transcript(shared));
@@ -206,7 +210,14 @@ function walkthroughIn(body: string | undefined): string | null {
   return body!.slice(at).match(/(`{3,})json\r?\n([\s\S]*?)\r?\n\1/)?.[2] ?? null;
 }
 
-async function fromComment(ref: { repo: string; id: string }, root: string): Promise<{ raw: string; origin: string }> {
+interface Loaded {
+  raw: string;
+  origin: string;
+  /** The PR it was posted on, so its commit can be fetched from refs/pull/N/head. */
+  pr?: number;
+}
+
+async function fromComment(ref: { repo: string; id: string }, root: string): Promise<Loaded> {
   const c = JSON.parse(await gh(["api", `repos/${ref.repo}/issues/comments/${ref.id}`], root, "Fetching the PR comment")) as {
     body: string;
     html_url: string;
@@ -214,7 +225,8 @@ async function fromComment(ref: { repo: string; id: string }, root: string): Pro
   };
   const raw = walkthroughIn(c.body);
   if (!raw) throw new Error(`${c.html_url} isn't a pair walkthrough comment.`);
-  return { raw, origin: `${c.html_url}${c.user ? ` (posted by ${c.user.login})` : ""}` };
+  const pr = Number(c.html_url.match(/\/pull\/(\d+)/)?.[1]) || undefined;
+  return { raw, origin: `${c.html_url}${c.user ? ` (posted by ${c.user.login})` : ""}`, pr };
 }
 
 interface PrView {
@@ -225,12 +237,12 @@ interface PrView {
 }
 
 /** The latest walkthrough on a PR (its comments, then its description), and who posted it. */
-async function fromPr(ref: string, root: string): Promise<{ raw: string; origin: string }> {
+async function fromPr(ref: string, root: string): Promise<Loaded> {
   const pr = JSON.parse(await gh(["pr", "view", ref, "--json", "number,body,author,comments"], root, "gh pr view")) as PrView;
   const posts = [{ body: pr.body, author: pr.author, url: `the description of PR #${pr.number}` }, ...pr.comments.map((c) => ({ ...c, url: c.url }))];
   for (const post of posts.reverse()) {
     const raw = walkthroughIn(post.body);
-    if (raw) return { raw, origin: `${post.url}${post.author ? ` (posted by ${post.author.login})` : ""}` };
+    if (raw) return { raw, origin: `${post.url}${post.author ? ` (posted by ${post.author.login})` : ""}`, pr: pr.number };
   }
   throw new Error(`PR #${pr.number} has no pair walkthrough comment.`);
 }
@@ -281,17 +293,18 @@ async function fetchText(url: string): Promise<string> {
  * a gist URL/id, a raw URL, or a local file.
  * PR numbers are looked up in the repo at `root`; file paths are relative to `cwd`.
  */
-export async function loadWalkthrough(source: string, root: string, cwd = root): Promise<SharedWalkthrough & { origin?: string }> {
+export async function loadWalkthrough(source: string, root: string, cwd = root): Promise<SharedWalkthrough & { origin?: string; pr?: number }> {
   source = source.trim();
   let raw: string;
   let origin: string | undefined;
+  let pr: number | undefined;
   const comment = commentRef(source);
-  const pr = prRef(source);
+  const prSource = prRef(source);
   const id = gistId(source);
   if (comment) {
-    ({ raw, origin } = await fromComment(comment, root));
-  } else if (pr) {
-    ({ raw, origin } = await fromPr(pr, root));
+    ({ raw, origin, pr } = await fromComment(comment, root));
+  } else if (prSource) {
+    ({ raw, origin, pr } = await fromPr(prSource, root));
   } else if (id) {
     const files = await fetchGist(id);
     const file = files.find((f) => f.filename.endsWith(FILE_SUFFIX)) ?? files.find((f) => f.filename.endsWith(".json"));
@@ -310,7 +323,7 @@ export async function loadWalkthrough(source: string, root: string, cwd = root):
     throw new Error(`${source} isn't valid JSON.`);
   }
   if (typeof data?.title !== "string" || !Array.isArray(data.segments)) throw new Error(`${source} isn't a pair walkthrough (needs a title and segments).`);
-  return { ...data, origin };
+  return { ...data, origin, pr };
 }
 
 /** Whether the viewer's checkout differs from the code the walkthrough was written against. */
@@ -343,16 +356,75 @@ export async function repoMismatch(root: string, shared: SharedWalkthrough): Pro
   return `This walkthrough is for ${theirs}, but pair is showing ${ours} (${root}). Open it from a pair session in a checkout of ${theirs}.`;
 }
 
-/** Loads a shared walkthrough and checks it against this checkout: the right repo, and anchors that resolve. */
-export async function prepareShared(ws: Workspace, source: string) {
-  const shared = await loadWalkthrough(source, ws.root);
-  const [stale, wrongRepo, result] = await Promise.all([
-    freshness(ws.root, shared),
-    repoMismatch(ws.root, shared),
-    resolveScript(ws, { title: shared.title, segments: shared.segments }),
-  ]);
-  if (wrongRepo) return { shared, stale: null, wrongRepo: true, result: { errors: [wrongRepo], warnings: [] } as typeof result };
-  return { shared, stale, wrongRepo: false, result };
+const hasCommit = (root: string, commit: string) => tryGit(root, "cat-file", "-e", `${commit}^{commit}`).then((r) => r !== null);
+
+/**
+ * Makes sure `commit` is in the local repo, fetching it from origin if needed: by SHA first
+ * (GitHub allows it), then the PR's head ref (survives the branch being deleted), then the branch.
+ * Nothing is checked out and no local branches move. Returns why it failed, or null.
+ */
+async function ensureCommit(root: string, commit: string, hints: { pr?: number; branch?: string }): Promise<string | null> {
+  if (await hasCommit(root, commit)) return null;
+  const refspecs = [commit, hints.pr && `refs/pull/${hints.pr}/head`, hints.branch && `refs/heads/${hints.branch}`].filter(Boolean) as string[];
+  let reason = "";
+  for (const refspec of refspecs) {
+    try {
+      await exec("git", ["fetch", "--quiet", "--no-tags", "origin", refspec], {
+        cwd: root,
+        timeout: 60_000,
+        // Never hang on a credential prompt nobody can see.
+        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+      });
+    } catch (e) {
+      const err = e as Error & { stderr?: string; killed?: boolean };
+      reason = err.killed ? "git fetch timed out" : (err.stderr || err.message).trim().split("\n").pop() ?? "";
+      continue;
+    }
+    if (await hasCommit(root, commit)) return null;
+  }
+  // A fetch that worked but didn't bring the commit, or GitHub's "not our ref": it isn't on origin.
+  return !reason || /not our ref|couldn't find remote ref/i.test(reason)
+    ? "origin doesn't have it (was it never pushed, or was the branch force-pushed?)"
+    : reason;
+}
+
+export interface PreparedShared {
+  shared: Awaited<ReturnType<typeof loadWalkthrough>>;
+  /** The commit to show while it plays, or null to show the working tree. */
+  view: CommitView | null;
+  /** The checkout differs from the code it was written against (only when it can't be shown as written). */
+  stale: string | null;
+  wrongRepo: boolean;
+  result: Awaited<ReturnType<typeof resolveScript>>;
+}
+
+/**
+ * Loads a shared walkthrough and gets it ready to play here. It's checked against the commit it
+ * was written against, read from git (fetched if needed), so it plays as written whatever
+ * branch the viewer has checked out. Only if that commit can't be had does it fall back to the checkout.
+ */
+export async function prepareShared(ws: Workspace, source: string, cwd = ws.root): Promise<PreparedShared> {
+  const shared = await loadWalkthrough(source, ws.root, cwd);
+  const script = { title: shared.title, segments: shared.segments };
+  const wrongRepo = await repoMismatch(ws.root, shared);
+  if (wrongRepo) return { shared, view: null, stale: null, wrongRepo: true, result: { errors: [wrongRepo], warnings: [] } };
+
+  const { commit, branch } = shared.source ?? {};
+  const unavailable = commit ? await ensureCommit(ws.root, commit, { pr: shared.pr, branch }) : "it doesn't say which commit it was written against";
+  if (commit && !unavailable) {
+    const view: CommitView = { commit, ...(branch && { branch }), ...(shared.pr && { pr: shared.pr }) };
+    return { shared, view, stale: null, wrongRepo: false, result: await resolveScript(ws.at(view), script) };
+  }
+
+  // Couldn't get the exact code, so try the working tree. It may still line up.
+  const viewing = ws.at(null);
+  const [stale, result] = await Promise.all([freshness(viewing.root, shared), resolveScript(viewing, script)]);
+  const why = commit ? `Couldn't get commit ${commit.slice(0, 10)}${branch ? ` (${branch})` : ""} from origin: ${unavailable}.` : `This walkthrough ${unavailable}.`;
+  if (!result.script) {
+    // One clear reason, not a list of every anchor that's missing from the wrong code.
+    return { shared, view: null, stale: null, wrongRepo: false, result: { ...result, errors: [`${why} It doesn't match your checkout either, so it can't play here.`] } };
+  }
+  return { shared, view: null, stale: [why, "Playing it against your checkout instead.", stale].filter(Boolean).join(" "), wrongRepo: false, result };
 }
 
 /** Links only name GitHub PRs, PR comments, and gists: never local files or arbitrary URLs. */
@@ -361,19 +433,22 @@ function linkSource(source: string): string {
   return source.trim();
 }
 
-/** Backs the UI's "Play in pair" links. `onPlay` sees each walkthrough that's about to play. */
-export function sharedHandler(ws: Workspace, onPlay: (script: Script) => void): SharedHandler {
+/**
+ * Backs the UI's "Play in pair" links. `onPlay` sees each walkthrough that's about to play,
+ * and the commit to show while it does.
+ */
+export function sharedHandler(ws: Workspace, onPlay: (script: Script, view: CommitView | null) => void): SharedHandler {
   return {
     async preview(source) {
-      const { shared, stale, wrongRepo, result } = await prepareShared(ws, linkSource(source));
+      const { shared, view, stale, wrongRepo, result } = await prepareShared(ws, linkSource(source));
       const errors = result.script ? undefined : result.errors;
       const repo = repoSlug(shared.source?.repo);
-      return { title: shared.title, segments: shared.segments.length, origin: shared.origin, source: shared.source, stale, errors, repo, wrongRepo, sessions: [] };
+      return { title: shared.title, segments: shared.segments.length, origin: shared.origin, source: shared.source, snapshot: !!view, stale, errors, repo, wrongRepo, sessions: [] };
     },
     async resolve(source) {
-      const { shared, result } = await prepareShared(ws, linkSource(source));
-      if (!result.script) throw new Error(`This walkthrough can't play here:\n- ${result.errors.join("\n- ")}`);
-      onPlay({ title: shared.title, segments: shared.segments });
+      const { shared, view, result } = await prepareShared(ws, linkSource(source));
+      if (!result.script) throw new Error(`This walkthrough can't play here: ${result.errors.join(" ")}`);
+      onPlay({ title: shared.title, segments: shared.segments }, view);
       return result.script;
     },
   };
