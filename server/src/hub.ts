@@ -114,6 +114,7 @@ export class Hub {
     if (this.clients.size) return true;
     // Hosted: the viewer comes in through the service's proxy; there is no local browser to open.
     if (hosted) {
+      if (hosted.author) return false; // author mode never has a viewer: don't wait for one
       return new Promise((resolve) => {
         const t = setTimeout(() => resolve(false), hosted!.connectTimeoutMs);
         this.connectWaiters.push(() => (clearTimeout(t), resolve(true)));
