@@ -135,6 +135,46 @@ export interface KokoroSpeech {
   words: { offset: number; start: number }[];
 }
 
+export type RemoteTtsProvider = "openai" | "deepinfra" | "custom";
+
+/** Defaults for a hosted provider; the user can override host and model. */
+export interface RemoteTtsPreset {
+  label: string;
+  host: string;
+  model: string;
+  voice: string;
+  needsKey: boolean;
+}
+
+/** Hosted TTS settings as the browser sees them: never the key itself. */
+export interface RemoteTtsPublic {
+  provider: RemoteTtsProvider;
+  host: string;
+  model: string;
+  voice: string;
+  hasKey: boolean;
+  /** Has a host, and a key if the provider needs one. */
+  configured: boolean;
+  presets: Record<RemoteTtsProvider, RemoteTtsPreset>;
+}
+
+/** Body of POST /api/tts/remote/settings. apiKey: omitted keeps it, "" or null clears it. */
+export interface RemoteTtsUpdate {
+  provider?: RemoteTtsProvider;
+  host?: string;
+  model?: string;
+  voice?: string;
+  apiKey?: string | null;
+  /** Make a short test request after saving. */
+  test?: boolean;
+}
+
+/** Response of POST /api/tts/remote/settings. */
+export interface RemoteTtsSaved {
+  settings: RemoteTtsPublic;
+  test?: { ok: true } | { ok: false; error: string };
+}
+
 export type ServerMessage =
   | { type: "hello"; root: string; rootName: string }
   | { type: "kokoro"; status: KokoroStatus }

@@ -284,3 +284,14 @@ button.link { background: none; padding: 0; color: var(--accent); text-decoratio
 .view-text code { color: var(--hl-edge); }
 .view-bar button { flex: none; padding: 3px 10px; font-size: 12px; }
 .tree-commit { margin-left: 6px; color: var(--hl-edge); font-weight: normal; text-transform: none; }
+
+.settings-button { padding: 3px 8px; }
+.controls input.voice-name { background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; width: 100px; color: inherit; font: inherit; }
+.remote-settings { display: flex; flex-direction: column; gap: 6px; margin: 0 12px 10px; padding: 10px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; font-size: 12px; }
+.remote-settings-head { display: flex; justify-content: space-between; align-items: center; }
+.remote-settings label { display: flex; flex-direction: column; gap: 2px; color: var(--muted); }
+.remote-settings label.remote-settings-check { flex-direction: row; align-items: center; gap: 6px; }
+.remote-settings input:not([type="checkbox"]), .remote-settings select { background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 4px 6px; color: var(--text); font: inherit; }
+.remote-settings-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.remote-settings-actions .ok { color: #89d185; }
+.remote-settings-actions .error { color: #f48771; }

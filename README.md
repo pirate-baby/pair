@@ -54,6 +54,11 @@ Each config file is copied to `<file>.pair-backup` before its first edit. Re-run
 
 While a session is running, Pair serves its UI on `http://localhost:7420` (bound to 127.0.0.1 only). Kokoro is opt-in: the first time you pick it, Pair installs `kokoro-js` into `~/.cache/pair/kokoro` and downloads the ~330 MB model from Hugging Face.
 
+### Hosted voices
+Instead of the system voice or a local Kokoro, Pair can narrate through a hosted text-to-speech API: OpenAI, DeepInfra (which hosts Kokoro), or any other OpenAI-compatible `/audio/speech` endpoint, including one you host yourself. Pick **Hosted API** as the speech engine, click ⚙, choose a provider, and enter its host and API key. Saving makes a short test request so you know it works.
+
+The settings, key included, are saved on your machine in `~/.config/pair/tts.json` (readable only by you; set `PAIR_CONFIG_DIR` to use another directory) and shared by every Pair session. The key is never sent back to the browser. Narration text is sent to the provider you choose. If the provider isn't set up or a request fails, Pair says why and falls back to the system voice.
+
 ## Usage
 In your harness of choice, tell the agent to walk you through or explain some part of your repo. Pair takes it from there. 
 

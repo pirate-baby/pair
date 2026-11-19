@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ClientMessage, CommitView, KokoroStatus, ResolvedScript, ServerMessage, SessionInfo, SharedPreview } from "../../shared/protocol";
+import type { ClientMessage, CommitView, KokoroStatus, RemoteTtsPublic, ResolvedScript, ServerMessage, SessionInfo, SharedPreview } from "../../shared/protocol";
 import { Player, type PlayerState } from "./player";
-import { KOKORO_VOICES, Speaker, type Engine } from "./speech";
+import { RemoteSettings, saveRemoteSettings } from "./remote-settings";
+import { KOKORO_VOICES, REMOTE_VOICES, Speaker, type Engine } from "./speech";
 import { Stage, type TabsState } from "./stage";
 import { FileTree, tree } from "./tree";
 
@@ -79,6 +80,10 @@ export function App() {
   const [engine, setEngine] = useState<Engine>(prefs.engine ?? "system");
   const [kokoroVoice, setKokoroVoice] = useState(prefs.kokoroVoice ?? "af_heart");
   const [kokoro, setKokoro] = useState<KokoroStatus>({ state: "off" });
+  // Hosted voice settings, from the server (which keeps the key to itself).
+  const [remote, setRemote] = useState<RemoteTtsPublic | null>(null);
+  const [remoteOpen, setRemoteOpen] = useState(false);
+  const [remoteError, setRemoteError] = useState<string | null>(null);
   const [shared, setShared] = useState<SharedLink | null>(linkFromUrl);
   // A commit shown instead of the working tree (a shared walkthrough's code), or null.
   const [view, setView] = useState<CommitView | null>(null);
@@ -94,6 +99,32 @@ export function App() {
     player.speaker.kokoroVoice = kokoroVoice;
     savePrefs({ enabled: voiceOn, voice: voiceURI, rate, engine, kokoroVoice });
   }, [player, voiceOn, voiceURI, rate, engine, kokoroVoice]);
+
+  useEffect(() => {
+    player.speaker.remoteVoice = remote?.voice ?? "";
+    player.speaker.remoteReady = !!remote?.configured;
+    setRemoteError(null);
+  }, [player, remote]);
+
+  useEffect(() => {
+    player.speaker.onServerError = (e, err) => e === "remote" && setRemoteError(err.message);
+  }, [player]);
+
+  // Other Pair sessions may have changed the shared settings, so reload on every connect.
+  useEffect(() => {
+    if (!connected) return;
+    fetch("/api/tts/remote/settings")
+      .then((r) => r.json())
+      .then((s: RemoteTtsPublic) => setRemote(s))
+      .catch(() => {});
+  }, [connected]);
+
+  const setRemoteVoice = (voice: string) => {
+    if (remote) setRemote({ ...remote, voice });
+    saveRemoteSettings({ voice })
+      .then((saved) => setRemote(saved.settings))
+      .catch((e) => setRemoteError((e as Error).message));
+  };
 
   // A "Play in pair" link: load the walkthrough and check it against this checkout before offering to play.
   useEffect(() => {
@@ -390,8 +421,33 @@ export function App() {
           <select value={engine} onChange={(e) => setEngine(e.target.value as Engine)} disabled={!voiceOn} title="Speech engine">
             <option value="system">System</option>
             <option value="kokoro">Kokoro</option>
+            <option value="remote">Hosted API</option>
           </select>
-          {engine === "kokoro" ? (
+          {engine === "remote" ? (
+            <>
+              {remote && REMOTE_VOICES[remote.provider] ? (
+                <select value={remote.voice} onChange={(e) => setRemoteVoice(e.target.value)} disabled={!voiceOn}>
+                  {!REMOTE_VOICES[remote.provider].some((v) => v.id === remote.voice) && <option value={remote.voice}>{remote.voice}</option>}
+                  {REMOTE_VOICES[remote.provider].map((v) => (
+                    <option key={v.id} value={v.id}>{v.name}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  className="voice-name"
+                  defaultValue={remote?.voice ?? ""}
+                  key={remote?.voice ?? ""}
+                  onBlur={(e) => e.target.value.trim() !== remote?.voice && setRemoteVoice(e.target.value.trim())}
+                  placeholder="Voice"
+                  title="Voice name"
+                  disabled={!voiceOn || !remote}
+                />
+              )}
+              <button className="secondary settings-button" onClick={() => setRemoteOpen((o) => !o)} disabled={!remote} title="Hosted voice settings" aria-label="Hosted voice settings">
+                ⚙
+              </button>
+            </>
+          ) : engine === "kokoro" ? (
             <select value={kokoroVoice} onChange={(e) => setKokoroVoice(e.target.value)} disabled={!voiceOn}>
               {KOKORO_VOICES.map((v) => (
                 <option key={v.id} value={v.id}>{v.name}</option>
@@ -414,6 +470,18 @@ export function App() {
             ))}
           </select>
         </div>
+
+        {engine === "remote" && remoteOpen && remote && (
+          <RemoteSettings settings={remote} onSaved={setRemote} onClose={() => setRemoteOpen(false)} />
+        )}
+
+        {voiceOn && engine === "remote" && remote && !remoteOpen && (!remote.configured || remoteError) && (
+          <div className={`engine-status ${remoteError ? "error" : ""}`}>
+            {remoteError ? `Hosted voice failed: ${remoteError}` : "The hosted voice isn't set up yet."}{" "}
+            <button className="link" onClick={() => setRemoteOpen(true)}>Settings</button>
+            <span className="engine-note">Using the system voice until it works.</span>
+          </div>
+        )}
 
         {voiceOn && engine === "kokoro" && kokoro.state !== "ready" && (
           <div className={`engine-status ${kokoro.state === "error" ? "error" : ""}`}>
