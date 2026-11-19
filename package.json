@@ -37,6 +37,7 @@
     "build": "npm run build:web && npm run build:server",
     "build:web": "vite build",
     "build:server": "tsc -p tsconfig.server.json",
+    "test": "node --test 'server/test/*.test.ts'",
     "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.web.json --noEmit",
     "dev:web": "vite",
     "play": "node dist/server/server/src/index.js play",

@@ -1,13 +1,15 @@
-// Text-to-speech with word-level progress. Two engines:
+// Text-to-speech with word-level progress. Three engines:
 //  - "system": the Web Speech API. When a voice doesn't report word boundaries
 //    (or voice is off) progress is estimated from speaking rate.
 //  - "kokoro": local neural TTS synthesized by the pair server, one sentence at
 //    a time, with word timings derived from the model's phoneme durations.
-//    Falls back to "system" until Kokoro is ready, or if a request fails.
+//  - "remote": a hosted OpenAI-compatible speech API (OpenAI, DeepInfra, …),
+//    called through the pair server, with word timings estimated from length.
+//  Server engines fall back to "system" until they're ready, or if a request fails.
 import type { KokoroSpeech, KokoroStatus } from "../../shared/protocol";
 
 export type SpeakResult = "end" | "stopped";
-export type Engine = "system" | "kokoro";
+export type Engine = "system" | "kokoro" | "remote";
 
 export const KOKORO_VOICES: { id: string; name: string }[] = [
   { id: "af_heart", name: "Heart (US, F)" },
@@ -20,6 +22,12 @@ export const KOKORO_VOICES: { id: string; name: string }[] = [
   { id: "bm_george", name: "George (UK, M)" },
   { id: "bm_fable", name: "Fable (UK, M)" },
 ];
+
+/** Voices offered for each hosted provider; "custom" takes a typed voice name. */
+export const OPENAI_VOICES: { id: string; name: string }[] = ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse"].map(
+  (id) => ({ id, name: id[0].toUpperCase() + id.slice(1) }),
+);
+export const REMOTE_VOICES: Record<string, { id: string; name: string }[]> = { openai: OPENAI_VOICES, deepinfra: KOKORO_VOICES };
 
 interface Chunk {
   start: number;
@@ -65,6 +73,9 @@ export class Speaker {
   engine: Engine = "system";
   kokoroVoice = "af_heart";
   kokoroStatus: KokoroStatus = { state: "off" };
+  remoteVoice = "";
+  /** The hosted engine has a host (and a key, if its provider needs one). */
+  remoteReady = false;
   private clips = new Map<string, Promise<Clip>>();
   private stopCurrent: (() => void) | null = null;
   // Chrome drops events for utterances that get garbage collected.
@@ -87,24 +98,30 @@ export class Speaker {
     this.stopCurrent?.();
   }
 
-  private useKokoro() {
-    return this.enabled && this.engine === "kokoro" && this.kokoroStatus.state === "ready";
+  /** Whether speech comes from the pair server (Kokoro or a hosted API) rather than the browser. */
+  private useServer() {
+    if (!this.enabled) return false;
+    if (this.engine === "kokoro") return this.kokoroStatus.state === "ready";
+    if (this.engine === "remote") return this.remoteReady;
+    return false;
   }
 
   /** Warm the cache for text that's about to be spoken (e.g. the next segment). */
   prefetch(text: string) {
-    if (!this.useKokoro()) return;
+    if (!this.useServer()) return;
     for (const c of chunkText(text).slice(0, 2)) this.clip(c.text).catch(() => {});
   }
 
   private clip(text: string): Promise<Clip> {
-    const key = `${this.kokoroVoice}|${this.rate}|${text}`;
+    const remote = this.engine === "remote";
+    const voice = remote ? this.remoteVoice : this.kokoroVoice;
+    const key = `${this.engine}|${voice}|${this.rate}|${text}`;
     let p = this.clips.get(key);
     if (!p) {
-      p = fetch("/api/tts/kokoro", {
+      p = fetch(remote ? "/api/tts/remote" : "/api/tts/kokoro", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text, voice: this.kokoroVoice, speed: this.rate }),
+        body: JSON.stringify({ text, voice, speed: this.rate }),
       })
         .then(async (res) => {
           const body = await res.json();
@@ -132,10 +149,13 @@ export class Speaker {
    * each word begins. Resolves "stopped" if stop() is called first.
    */
   speak(text: string, from: number, onProgress: (offset: number) => void): Promise<SpeakResult> {
-    return this.useKokoro() ? this.speakKokoro(text, from, onProgress) : this.speakSystem(text, from, onProgress);
+    return this.useServer() ? this.speakServer(text, from, onProgress) : this.speakSystem(text, from, onProgress);
   }
 
-  private speakKokoro(text: string, from: number, onProgress: (offset: number) => void): Promise<SpeakResult> {
+  /** Called when a server engine fails, so the UI can say why it fell back. */
+  onServerError: (engine: Engine, error: Error) => void = () => {};
+
+  private speakServer(text: string, from: number, onProgress: (offset: number) => void): Promise<SpeakResult> {
     this.stop();
     const chunks = chunkText(text);
     let index = Math.max(0, chunks.findIndex((c) => c.start + c.text.length > from));
@@ -164,7 +184,8 @@ export class Speaker {
           if (chunks[index + 1]) this.clip(chunks[index + 1].text).catch(() => {});
         } catch (e) {
           if (stopped) return "stopped";
-          console.warn("[pair] Kokoro failed; using the system voice", e);
+          console.warn(`[pair] ${this.engine} speech failed; using the system voice`, e);
+          this.onServerError(this.engine, e as Error);
           return this.speakSystem(text, Math.max(from, chunk.start), onProgress);
         }
         if (stopped) return "stopped";

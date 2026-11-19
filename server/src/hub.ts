@@ -4,9 +4,10 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
-import type { ClientMessage, CommitView, ResolvedScript, ServerMessage, SharedPreview, VisibleContext } from "../../shared/protocol.js";
+import type { ClientMessage, CommitView, RemoteTtsSaved, RemoteTtsUpdate, ResolvedScript, ServerMessage, SharedPreview, VisibleContext } from "../../shared/protocol.js";
 import type { Workspace } from "./files.js";
 import { Kokoro } from "./kokoro.js";
+import { NotConfigured, RemoteTts } from "./remote-tts.js";
 import { SessionRegistry } from "./sessions.js";
 
 const WEB_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../web");
@@ -69,6 +70,7 @@ export class Hub {
   private queued: Outcome | null = null;
   private connectWaiters: (() => void)[] = [];
   private kokoro = new Kokoro();
+  private remoteTts = new RemoteTts();
   private ended: { message: string | null } | null = null;
   private silenceTimer: NodeJS.Timeout | null = null;
   shared: SharedHandler | null = null;
@@ -357,6 +359,33 @@ export class Hub {
         return json(await this.kokoro.speak(String(text), String(voice || "af_heart"), Number(speed) || 1));
       } catch (e) {
         return json({ error: (e as Error).message }, 503);
+      }
+    }
+    if (url.pathname === "/api/tts/remote/settings") {
+      if (req.method === "GET") return json(this.remoteTts.publicSettings());
+      if (req.method === "POST") {
+        let saved: RemoteTtsSaved;
+        try {
+          const update = JSON.parse(await readBody(req)) as RemoteTtsUpdate;
+          saved = { settings: this.remoteTts.save(update) };
+          if (update.test && saved.settings.configured) {
+            saved.test = await this.remoteTts.speak("Testing.").then(
+              () => ({ ok: true as const }),
+              (e) => ({ ok: false as const, error: (e as Error).message }),
+            );
+          }
+        } catch (e) {
+          return json({ error: (e as Error).message }, 400);
+        }
+        return json(saved);
+      }
+    }
+    if (url.pathname === "/api/tts/remote" && req.method === "POST") {
+      try {
+        const { text, voice, speed } = JSON.parse(await readBody(req));
+        return json(await this.remoteTts.speak(String(text), voice ? String(voice) : undefined, Number(speed) || 1));
+      } catch (e) {
+        return json({ error: (e as Error).message }, e instanceof NotConfigured ? 503 : 502);
       }
     }
     if (url.pathname.startsWith("/api/shared/") && req.method === "POST") {
